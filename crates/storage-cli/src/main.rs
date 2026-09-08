@@ -7,7 +7,7 @@ use storage_core::{
 };
 
 #[derive(Parser)]
-#[command(name = "sv", about = "Storage visualizer engine")]
+#[command(name = "sv", version, about = "Storage visualizer engine")]
 struct Cli {
     #[arg(long, global = true)]
     json: bool,
