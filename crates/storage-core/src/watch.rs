@@ -84,34 +84,56 @@ fn size_of(p: &Path) -> Option<u64> {
 /// absolute. Bounded, because a long-running monitor over a busy tree would
 /// otherwise grow without limit.
 struct Sizes {
-    seen: HashMap<PathBuf, u64>,
+    /// path -> (last seen size, sequence number of that sighting)
+    seen: HashMap<PathBuf, (u64, u64)>,
     cap: usize,
+    tick: u64,
 }
 
 impl Sizes {
     fn new(cap: usize) -> Sizes {
-        Sizes { seen: HashMap::new(), cap }
+        Sizes { seen: HashMap::new(), cap, tick: 0 }
+    }
+
+    /// Drop the coldest half once the cap is reached.
+    ///
+    /// Clearing the whole map was cheaper but made the next event for *every*
+    /// path report its full size as the delta rather than the change. Halving
+    /// keeps the hot paths — which is what a monitor is watching — and pays an
+    /// O(n) sort only once per `cap/2` insertions.
+    fn evict(&mut self) {
+        let mut seqs: Vec<u64> = self.seen.values().map(|&(_, s)| s).collect();
+        let keep = seqs.len() / 2;
+        if keep == 0 {
+            self.seen.clear();
+            return;
+        }
+        seqs.sort_unstable();
+        let cutoff = seqs[seqs.len() - keep];
+        self.seen.retain(|_, &mut (_, s)| s >= cutoff);
     }
 
     /// Delta for `path`, and the kind the delta implies.
     fn delta(&mut self, path: &Path) -> (EventKind, i64) {
-        // ponytail: at the cap the whole map is dropped rather than evicted by
-        // age. The cost is that the next event for each path reports its full
-        // size as the delta instead of the change. An LRU is the upgrade if
-        // that ever shows up as visibly wrong numbers.
         if self.seen.len() >= self.cap {
-            self.seen.clear();
+            self.evict();
+            debug_assert!(
+                self.seen.len() < self.cap,
+                "eviction left the map at or above its cap"
+            );
         }
+        self.tick += 1;
+        let tick = self.tick;
         match size_of(path) {
             None => {
-                let old = self.seen.remove(path).unwrap_or(0);
+                let old = self.seen.remove(path).map(|(b, _)| b).unwrap_or(0);
                 (EventKind::Removed, -(old as i64))
             }
             Some(new) => {
-                let prev = self.seen.insert(path.to_path_buf(), new);
+                let prev = self.seen.insert(path.to_path_buf(), (new, tick));
                 match prev {
                     None => (EventKind::Created, new as i64),
-                    Some(old) => (EventKind::Modified, new as i64 - old as i64),
+                    Some((old, _)) => (EventKind::Modified, new as i64 - old as i64),
                 }
             }
         }
