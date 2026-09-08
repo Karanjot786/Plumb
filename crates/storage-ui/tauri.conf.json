@@ -39,7 +39,6 @@
     "shortDescription": "See what is actually reclaimable on your disk.",
     "longDescription": "Every other disk analyzer tells you what is big. This one tells you what deleting would actually free: hardlinks, APFS clones, sparse files and snapshots all break the naive sum. Nothing is ever deleted - removals go to a staging area with a manifest and a one-command undo.",
     "copyright": "Copyright 2026 Karanjot786. Licensed under Apache-2.0.",
-    "licenseFile": "../../LICENSE",
     "macOS": {
       "minimumSystemVersion": "10.15"
     },
