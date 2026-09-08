@@ -250,6 +250,20 @@ impl Watcher for Poll {
             return Ok(Vec::new());
         }
         self.last = Instant::now();
+
+        // A root that is momentarily unreadable scans to just itself - every
+        // child vanishes - so diff reports them all Removed, the stripped tree
+        // replaces the baseline, and the next poll reports them all Added. Two
+        // storms for a tree that never changed.
+        //
+        // The shape cannot be used to detect this: a genuine `rm -rf` of the
+        // contents leaves the same root-only tree and *should* report. So ask
+        // the filesystem whether the root is readable, and if it is not, keep
+        // the baseline and say nothing. A failed read is not a deletion.
+        if std::fs::read_dir(&self.root).is_err() {
+            return Ok(Vec::new());
+        }
+
         let new = self.scan()?;
         let at = now();
         let base = self.root.parent().map(|p| p.to_path_buf()).unwrap_or_default();
