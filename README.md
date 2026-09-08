@@ -1,4 +1,4 @@
-# Storage Visualizer
+# Plumb
 
 **Every other disk analyzer tells you what is big. This one tells you what deleting
 would actually free.**
@@ -10,7 +10,7 @@ from — shows its full length while sharing every block with its original. A sp
 file reports terabytes and occupies megabytes. Delete any of them expecting the
 advertised space back and you will not get it.
 
-Storage Visualizer models all four — hardlinks, clones, sparse files, snapshots —
+Plumb models all four — hardlinks, clones, sparse files, snapshots —
 and reports **reclaimable bytes**: the blocks that would genuinely be returned to
 the volume. Shared blocks are credited exactly once, at the lowest common ancestor of
 everything that shares them, so a folder's number is honest no matter where you look
@@ -35,7 +35,7 @@ be attributed is shown as unaccounted rather than quietly absorbed.
 There is no Apple Developer signature on the app or the CLI, because notarization
 costs $99/yr and this project does not have it. On first launch macOS will refuse to
 open the app. Right-click the app → **Open** → **Open** in the dialog that follows, once;
-after that it launches normally. For the CLI, `xattr -d com.apple.quarantine ./sv`.
+after that it launches normally. For the CLI, `xattr -d com.apple.quarantine ./plumb`.
 If that trade is not acceptable to you — for a tool that moves files, it is a fair
 objection — build from source, which is a supported path and produces no quarantine
 flag at all.
@@ -58,14 +58,14 @@ Windows application discovery is not written, so the tab does not appear there.
 ```bash
 git clone https://github.com/Karanjot786/Visualize_Storage
 cd Visualize_Storage
-cargo install --path crates/storage-cli    # installs `sv`
+cargo install --path crates/plumb-cli    # installs `plumb`
 ```
 
 **The desktop app**, from the same checkout:
 
 ```bash
 cargo install tauri-cli --version "^2" --locked
-cargo tauri build --config crates/storage-ui/tauri.conf.json
+cargo tauri build --config crates/plumb-ui/tauri.conf.json
 ```
 
 produces a `.dmg` and `.app` on macOS, a `.deb` and `.AppImage` on Linux.
@@ -91,12 +91,12 @@ What that means in practice:
   extra space. If a same-device staging directory cannot be created, the item is
   **refused** — there is no fallback that copies, and none that deletes.
 - **The manifest is written first.** A crash at any point after that leaves something
-  `sv restore` can finish. The manifest records each item's original path, its staged
+  `plumb restore` can finish. The manifest records each item's original path, its staged
   path, its size, and its `(dev, ino, mtime)` identity.
-- **Undo is one command.** `sv restore <id>` puts everything back. Restore never
+- **Undo is one command.** `plumb restore <id>` puts everything back. Restore never
   clobbers: if something now occupies the original path, that item stays staged and
   stays listed rather than overwriting whatever is there.
-- **Deletion is explicit and separate.** `sv commit <id>` is the only function in the
+- **Deletion is explicit and separate.** `plumb commit <id>` is the only function in the
   entire project that removes anything, and it refuses any path that is not inside a
   staging directory. That check is a runtime gate, not a debug assertion — it is
   compiled into release builds and it is the last thing standing between a path-handling
@@ -117,7 +117,7 @@ What that means in practice:
   under "left alone", because two apps can share a name and one of them is not the one
   you are removing. `--guesses` widens what is displayed, never what is touched.
 
-Staged items live for 30 days by default. `sv staged` lists every pending manifest.
+Staged items live for 30 days by default. `plumb staged` lists every pending manifest.
 
 ## The eight views
 
@@ -148,18 +148,18 @@ a live Monitor that reports what is growing under a directory as it happens.
 ## CLI
 
 ```
-sv scan <path>                    what is here, and what deleting it would free
-sv top <path> [--files]           the biggest entries
-sv old <path> [--days 365]        the stalest entries
-sv dupes <path> [--dedupe]        byte-identical files; --dedupe shares extents instead
-sv clean <paths...> [--dry-run]   stage for removal. deletes nothing
-sv staged                         pending manifests
-sv restore <id>                   put a manifest back
-sv commit <id>                    permanently remove a manifest's contents
-sv apps [--leftovers]             installed applications (macOS)
-sv uninstall <app> [--yes]        review, then stage, an app and what it left behind
-sv watch <path>                   report changes as they happen
-sv snapshot save|list|diff        save and compare scans over time
+plumb scan <path>                    what is here, and what deleting it would free
+plumb top <path> [--files]           the biggest entries
+plumb old <path> [--days 365]        the stalest entries
+plumb dupes <path> [--dedupe]        byte-identical files; --dedupe shares extents instead
+plumb clean <paths...> [--dry-run]   stage for removal. deletes nothing
+plumb staged                         pending manifests
+plumb restore <id>                   put a manifest back
+plumb commit <id>                    permanently remove a manifest's contents
+plumb apps [--leftovers]             installed applications (macOS)
+plumb uninstall <app> [--yes]        review, then stage, an app and what it left behind
+plumb watch <path>                   report changes as they happen
+plumb snapshot save|list|diff        save and compare scans over time
 ```
 
 `--json` on any command emits machine-readable output.

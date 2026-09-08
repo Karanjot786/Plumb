@@ -1,7 +1,7 @@
 {
-  "productName": "Storage Visualizer",
+  "productName": "Plumb",
   "version": "0.1.0",
-  "identifier": "dev.visualize.storage",
+  "identifier": "dev.plumb.app",
   "build": {
     "frontendDist": "dist"
   },
@@ -9,7 +9,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "Storage Visualizer",
+        "title": "Plumb",
         "width": 1440,
         "height": 900,
         "minWidth": 1040,

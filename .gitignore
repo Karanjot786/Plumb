@@ -1,3 +1,8 @@
 target/
 *.snap
 .DS_Store
+
+site/node_modules/
+site/.next/
+
+crates/*/gen/schemas/

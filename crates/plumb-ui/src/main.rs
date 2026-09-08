@@ -7,10 +7,10 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use storage_core::layout::{self, Opts, Scope, SizeMode, View};
-use storage_core::clean;
-use storage_core::render::{kind_of, render, ColorMode, Kind, RenderOpts};
-use storage_core::{aggregate, quick_wins, reconcile, scan, volume_of, Flags, NodeId, Tree};
+use plumb_core::layout::{self, Opts, Scope, SizeMode, View};
+use plumb_core::clean;
+use plumb_core::render::{kind_of, render, ColorMode, Kind, RenderOpts};
+use plumb_core::{aggregate, quick_wins, reconcile, scan, volume_of, Flags, NodeId, Tree};
 use tauri::ipc::Response;
 use tauri::{Emitter, Manager};
 
@@ -27,8 +27,8 @@ struct Loaded {
 /// produce.
 #[derive(Default)]
 struct AppsCache {
-    apps: Vec<storage_core::apps::App>,
-    found: Vec<Vec<storage_core::apps::Associated>>,
+    apps: Vec<plumb_core::apps::App>,
+    found: Vec<Vec<plumb_core::apps::Associated>>,
 }
 
 #[derive(Default)]
@@ -40,8 +40,8 @@ struct App {
     /// stages that same one, so the two can no longer disagree. Cleared
     /// whenever the apps list is rebuilt, which is what makes a stale sheet
     /// fail loudly instead of acting on a re-sorted index.
-    plans: Mutex<std::collections::HashMap<u64, storage_core::apps::CleanupPlan>>,
-    watch: Mutex<Option<Box<dyn storage_core::watch::Watcher + Send>>>,
+    plans: Mutex<std::collections::HashMap<u64, plumb_core::apps::CleanupPlan>>,
+    watch: Mutex<Option<Box<dyn plumb_core::watch::Watcher + Send>>>,
 }
 
 /// Handles for pending plans. Never reused, so a token from a cleared
@@ -313,7 +313,7 @@ fn render_view(req: ViewReq, state: tauri::State<'_, App>) -> Response {
 
     let started = Instant::now();
     let (pixels, rects) = render(t, node, &o);
-    let (pw, ph) = storage_core::render::px_size(&o);
+    let (pw, ph) = plumb_core::render::px_size(&o);
     eprintln!(
         "render {view:?} node={node} rects={} in {} ms",
         rects.len(),
@@ -388,7 +388,7 @@ fn node_info(id: NodeId, size: u8, state: tauri::State<'_, App>) -> Result<Info,
     let bytes = layout::size_of(t, id, m);
     let scan_total = layout::size_of(t, 0, m).max(1);
     let parent = t.parent[i];
-    let parent_total = if parent == storage_core::NO_PARENT {
+    let parent_total = if parent == plumb_core::NO_PARENT {
         scan_total
     } else {
         layout::size_of(t, parent, m).max(1)
@@ -450,7 +450,7 @@ fn breadcrumb(id: NodeId, state: tauri::State<'_, App>) -> Result<Vec<Crumb>, St
     loop {
         out.push(Crumb { id: cur, name: t.name(cur).to_string() });
         let p = t.parent[cur as usize];
-        if p == storage_core::NO_PARENT {
+        if p == plumb_core::NO_PARENT {
             break;
         }
         cur = p;
@@ -600,10 +600,10 @@ fn snapshot_save(state: tauri::State<'_, App>) -> Result<SnapOut, String> {
         .file_name()
         .map(|s| s.to_string_lossy().replace(['/', ' '], "_"))
         .unwrap_or_else(|| "root".into());
-    let out = storage_core::snapshot::snapshots_dir()
+    let out = plumb_core::snapshot::snapshots_dir()
         .map_err(|e| e.to_string())?
-        .join(format!("{stem}-{}.svsnap", clean::now_secs()));
-    storage_core::snapshot::save(&l.tree, &out).map_err(|e| e.to_string())?;
+        .join(format!("{stem}-{}.plumbsnap", clean::now_secs()));
+    plumb_core::snapshot::save(&l.tree, &out).map_err(|e| e.to_string())?;
     let m = std::fs::metadata(&out).map_err(|e| e.to_string())?;
     Ok(SnapOut {
         name: out.file_name().unwrap_or_default().to_string_lossy().into_owned(),
@@ -615,7 +615,7 @@ fn snapshot_save(state: tauri::State<'_, App>) -> Result<SnapOut, String> {
 
 #[tauri::command]
 fn snapshot_list() -> Result<Vec<SnapOut>, String> {
-    Ok(storage_core::snapshot::list()
+    Ok(plumb_core::snapshot::list()
         .map_err(|e| e.to_string())?
         .into_iter()
         .map(|e| SnapOut {
@@ -639,9 +639,9 @@ struct DiffOut {
 
 #[tauri::command]
 fn snapshot_diff(old: String, new: String) -> Result<Vec<DiffOut>, String> {
-    let a = storage_core::snapshot::Snapshot::open(Path::new(&old)).map_err(|e| e.to_string())?;
-    let b = storage_core::snapshot::Snapshot::open(Path::new(&new)).map_err(|e| e.to_string())?;
-    Ok(storage_core::diff::diff(a.tree(), b.tree())
+    let a = plumb_core::snapshot::Snapshot::open(Path::new(&old)).map_err(|e| e.to_string())?;
+    let b = plumb_core::snapshot::Snapshot::open(Path::new(&new)).map_err(|e| e.to_string())?;
+    Ok(plumb_core::diff::diff(a.tree(), b.tree())
         .into_iter()
         .take(500)
         .map(|c| {
@@ -674,8 +674,8 @@ struct DupesOut {
     reflink_supported: bool,
 }
 
-fn scan_dupes(l: &Loaded, min_size: u64) -> Vec<storage_core::dupes::Group> {
-    storage_core::dupes::find(&l.tree, Path::new(&l.root_path), min_size)
+fn scan_dupes(l: &Loaded, min_size: u64) -> Vec<plumb_core::dupes::Group> {
+    plumb_core::dupes::find(&l.tree, Path::new(&l.root_path), min_size)
 }
 
 #[tauri::command]
@@ -684,8 +684,8 @@ fn dupes_find(min_size: u64, state: tauri::State<'_, App>) -> Result<DupesOut, S
     let l = g.as_ref().ok_or("nothing scanned yet")?;
     let groups = scan_dupes(l, min_size);
     Ok(DupesOut {
-        total_reclaimable: storage_core::dupes::total_reclaimable(&groups),
-        reflink_supported: storage_core::reflink::supported(Path::new(&l.root_path)),
+        total_reclaimable: plumb_core::dupes::total_reclaimable(&groups),
+        reflink_supported: plumb_core::reflink::supported(Path::new(&l.root_path)),
         groups: groups
             .into_iter()
             .take(200)
@@ -723,11 +723,11 @@ fn dupes_dedupe(
 ) -> Result<DedupeOut, String> {
     let g = state.loaded.lock().unwrap();
     let l = g.as_ref().ok_or("nothing scanned yet")?;
-    if !storage_core::reflink::supported(Path::new(&l.root_path)) {
+    if !plumb_core::reflink::supported(Path::new(&l.root_path)) {
         return Err("this mount does not support reflinks".into());
     }
     let groups = scan_dupes(l, min_size);
-    let r = storage_core::reflink::dedupe_groups(&groups, dry_run);
+    let r = plumb_core::reflink::dedupe_groups(&groups, dry_run);
     Ok(DedupeOut {
         freed: r.freed,
         done: r.done.len(),
@@ -784,19 +784,19 @@ struct AppDetail {
 
 fn app_out(
     idx: usize,
-    a: &storage_core::apps::App,
-    found: &[storage_core::apps::Associated],
+    a: &plumb_core::apps::App,
+    found: &[plumb_core::apps::Associated],
     contested: bool,
 ) -> AppOut {
     let bundle_bytes = found
         .iter()
-        .filter(|i| i.category == storage_core::apps::Category::Bundle)
+        .filter(|i| i.category == plumb_core::apps::Category::Bundle)
         .map(|i| i.bytes)
         .sum::<u64>()
         .max(a.bundle_bytes);
     let support_bytes = found
         .iter()
-        .filter(|i| i.category != storage_core::apps::Category::Bundle)
+        .filter(|i| i.category != plumb_core::apps::Category::Bundle)
         .map(|i| i.bytes)
         .sum();
     AppOut {
@@ -807,14 +807,14 @@ fn app_out(
         path: a.path.display().to_string(),
         bundle_bytes,
         support_bytes,
-        leftovers: found.iter().filter(|i| i.category != storage_core::apps::Category::Bundle).count(),
+        leftovers: found.iter().filter(|i| i.category != plumb_core::apps::Category::Bundle).count(),
         contested,
     }
 }
 
 #[tauri::command]
 fn apps_list(guesses: bool, state: tauri::State<'_, App>) -> Result<Vec<AppOut>, String> {
-    use storage_core::apps::{self, LeftoverOpts};
+    use plumb_core::apps::{self, LeftoverOpts};
     let apps = apps::list_apps().map_err(|e| e.to_string())?;
     let opts = LeftoverOpts { include_name_matches: guesses };
     // The sibling guard excludes an app by slot, so every app gets its own
@@ -836,8 +836,8 @@ fn apps_list(guesses: bool, state: tauri::State<'_, App>) -> Result<Vec<AppOut>,
     Ok(out)
 }
 
-fn assoc_out(i: &storage_core::apps::Associated) -> AssocOut {
-    let why = storage_core::apps::exclusion_reason(i);
+fn assoc_out(i: &plumb_core::apps::Associated) -> AssocOut {
+    let why = plumb_core::apps::exclusion_reason(i);
     AssocOut {
         path: i.path.display().to_string(),
         bytes: i.bytes,
@@ -857,7 +857,7 @@ fn assoc_out(i: &storage_core::apps::Associated) -> AssocOut {
 /// had never shown.
 #[tauri::command]
 fn app_detail(idx: usize, state: tauri::State<'_, App>) -> Result<AppDetail, String> {
-    use storage_core::apps;
+    use plumb_core::apps;
     let cache = state.apps.lock().unwrap();
     let a = cache.apps.get(idx).ok_or("no such application")?;
     let found = &cache.found[idx];
@@ -915,7 +915,7 @@ struct UninstallOut {
 /// shift the slot and uninstall a different application.
 #[tauri::command]
 fn app_uninstall(token: u64, state: tauri::State<'_, App>) -> Result<UninstallOut, String> {
-    use storage_core::apps;
+    use plumb_core::apps;
     // Take the plan the review sheet was built from. Gone means the list was
     // rebuilt underneath it, and this request is about a world that no longer
     // exists.
@@ -965,7 +965,7 @@ struct EventOut {
 #[tauri::command]
 fn watch_start(path: String, state: tauri::State<'_, App>) -> Result<(), String> {
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
-    let w = storage_core::watch::watcher(Path::new(&path), threads).map_err(|e| e.to_string())?;
+    let w = plumb_core::watch::watcher(Path::new(&path), threads).map_err(|e| e.to_string())?;
     *state.watch.lock().unwrap() = Some(w);
     Ok(())
 }

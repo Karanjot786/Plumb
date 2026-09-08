@@ -124,9 +124,9 @@ pub fn supported(dir: &Path) -> bool {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
-    let src = dir.join(format!(".sv-reflink-probe-{stamp}"));
-    let dst = dir.join(format!(".sv-reflink-probe-{stamp}.clone"));
-    let ok = fs::write(&src, b"sv reflink probe").is_ok() && clone_file(&src, &dst).is_ok();
+    let src = dir.join(format!(".plumb-reflink-probe-{stamp}"));
+    let dst = dir.join(format!(".plumb-reflink-probe-{stamp}.clone"));
+    let ok = fs::write(&src, b"plumb reflink probe").is_ok() && clone_file(&src, &dst).is_ok();
     let _ = fs::remove_file(&src);
     let _ = fs::remove_file(&dst);
     ok
@@ -311,7 +311,7 @@ pub fn dedupe_pair(keep: &Path, dup: &Path) -> io::Result<u64> {
 
     let parent = dup.parent().ok_or_else(|| other("no parent directory"))?;
     let backup = parent.join(format!(
-        ".sv-reflink-backup-{}",
+        ".plumb-reflink-backup-{}",
         dup.file_name().unwrap_or_default().to_string_lossy()
     ));
     if backup.exists() {

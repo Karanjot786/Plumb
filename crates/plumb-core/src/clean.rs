@@ -147,7 +147,7 @@ pub fn central() -> io::Result<PathBuf> {
     #[cfg(windows)]
     let base = PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or_else(missing)?);
 
-    Ok(base.join("sv"))
+    Ok(base.join("plumb"))
 }
 
 pub fn manifests_dir() -> io::Result<PathBuf> {
@@ -193,7 +193,7 @@ fn staging_root_for(path: &Path) -> io::Result<PathBuf> {
 
     let mp = mount_point_of(path)
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no mount point for path"))?;
-    let alt = mp.join(".sv-staging");
+    let alt = mp.join(".plumb-staging");
     private_dir(&alt)?;
     if identity(&alt)?.dev != want {
         return Err(io::Error::other("staging directory is on another device"));
@@ -221,7 +221,7 @@ fn assert_in_staging(p: &Path) -> io::Result<()> {
         return deny("not an absolute path");
     }
     // A `..` anywhere makes every prefix test below meaningless:
-    // `/Volumes/X/.sv-staging/../../../Users/me/Documents` contains the marker
+    // `/Volumes/X/.plumb-staging/../../../Users/me/Documents` contains the marker
     // and still walks straight out of the staging area.
     if p.components().any(|c| matches!(c, Component::ParentDir)) {
         return deny("path contains a .. component");
@@ -239,8 +239,8 @@ fn assert_in_staging(p: &Path) -> io::Result<()> {
     let mut acc = PathBuf::new();
     for c in p.components() {
         acc.push(c);
-        if c.as_os_str() == ".sv-staging" {
-            // `is_dir()` follows symlinks, so a `.sv-staging` entry that is
+        if c.as_os_str() == ".plumb-staging" {
+            // `is_dir()` follows symlinks, so a `.plumb-staging` entry that is
             // a link to somewhere else satisfied this gate and every removal
             // underneath it then resolved through the link. Judge the entry as
             // itself, the way `entry_exists` above already does.
@@ -313,11 +313,11 @@ pub fn plan(tree: &Tree, root: &Path, ids: &[NodeId]) -> Plan {
             continue;
         }
         // Reachable only where `ids` names descendants rather than the root:
-        // the UI's "Add to Cleanup" (`storage-ui/src/main.rs:478`), which
+        // the UI's "Add to Cleanup" (`plumb-ui/src/main.rs:478`), which
         // passes the scan root and a selection under it. There a link pointing
         // out of the tree is refused instead of followed.
         //
-        // Both CLI routes - `sv clean <path>` and the uninstall flow - scan
+        // Both CLI routes - `plumb clean <path>` and the uninstall flow - scan
         // each path as its own root and pass `&[0]`, so `path == root` and this
         // is inert. Inert is correct there: staging a symlinked root moves the
         // link and escapes nothing. Audit U7 saw only that half.

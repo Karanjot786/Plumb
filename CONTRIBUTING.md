@@ -12,7 +12,7 @@ Correctness lives in two places instead:
    catch developers immediately.
 2. **Running the binary against a throwaway fixture.** Build a directory with the
    property you care about — a hardlink, a clone, a sparse file, a symlink pointing out
-   of the tree — and run `sv` at it.
+   of the tree — and run `plumb` at it.
 
 This is not a preference dressed up as a policy. Every serious defect this project has
 had was found by running it, not by reasoning about it: `freeable` exceeding the bytes
@@ -28,14 +28,14 @@ you never reproduced is a guess, and in a tool that moves files a guess is expen
 
 ```bash
 cargo build                       # workspace
-cargo run -p storage-cli -- scan ~/Downloads
+cargo run -p plumb-cli -- scan ~/Downloads
 ```
 
 For the desktop app:
 
 ```bash
 cargo install tauri-cli --version "^2" --locked
-cargo tauri dev --config crates/storage-ui/tauri.conf.json
+cargo tauri dev --config crates/plumb-ui/tauri.conf.json
 ```
 
 On Linux you will need the WebKitGTK development packages first:
@@ -56,16 +56,16 @@ F=$(mktemp -d)
 mkdir -p "$F/a" "$F/b"
 dd if=/dev/zero of="$F/a/big.bin" bs=1m count=50
 ln "$F/a/big.bin" "$F/b/hard.bin"          # the whole thesis in one line
-cargo run -p storage-cli -- scan "$F"      # freeable must be below logical
+cargo run -p plumb-cli -- scan "$F"      # freeable must be below logical
 ```
 
 ## Where things live
 
 | Crate | What it is |
 | --- | --- |
-| `storage-core` | The engine. Scanning, accounting, layout, rasterizing, staging, apps, watch. |
-| `storage-cli` | `sv`. A thin shell over the engine; every feature is reachable here first. |
-| `storage-ui` | The Tauri desktop app. Commands only — no logic that is not in the core. |
+| `plumb-core` | The engine. Scanning, accounting, layout, rasterizing, staging, apps, watch. |
+| `plumb-cli` | `plumb`. A thin shell over the engine; every feature is reachable here first. |
+| `plumb-ui` | The Tauri desktop app. Commands only — no logic that is not in the core. |
 
 Read `HANDOFF.md` before anything else. It records what is verified by having been run
 versus what merely compiles, which is a distinction this project takes seriously. The

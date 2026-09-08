@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/storage-core", "crates/storage-cli", "crates/storage-ui"]
+members = ["crates/plumb-core", "crates/plumb-cli", "crates/plumb-ui"]
 resolver = "2"
 
 [workspace.package]

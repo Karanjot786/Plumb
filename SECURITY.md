@@ -22,7 +22,7 @@ the following list is worth reporting:
 - A path outside a staging directory reaching `commit`, which is the only function in
   the project that deletes anything.
 - Any way to defeat `assert_in_staging` — an intermediate symlink, a `..` component
-  smuggled past the component scan, a `.sv-staging` marker in an attacker-chosen place,
+  smuggled past the component scan, a `.plumb-staging` marker in an attacker-chosen place,
   a race between the check and the removal.
 - A path on the deny list being staged anyway, or the structural rules in
   `shape_problem` being bypassed so that a home directory, a volume root or a mount

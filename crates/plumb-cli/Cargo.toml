@@ -1,5 +1,5 @@
 [package]
-name = "storage-cli"
+name = "plumb-cli"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,13 +8,13 @@ repository.workspace = true
 authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "sv - see what is actually reclaimable on your disk, not what merely looks big."
+description = "plumb - see what is actually reclaimable on your disk, not what merely looks big."
 
 [[bin]]
-name = "sv"
+name = "plumb"
 path = "src/main.rs"
 
 [dependencies]
-storage-core = { path = "../storage-core" }
+plumb-core = { path = "../plumb-core" }
 clap.workspace = true
 serde_json.workspace = true

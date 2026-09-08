@@ -1,13 +1,13 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use storage_core::snapshot;
-use storage_core::{
+use plumb_core::snapshot;
+use plumb_core::{
     commit, list_staged, plan, quick_wins, reconcile, restore, scan, stage, volume_of,
     Flags, NodeId, Plan, Tree,
 };
 
 #[derive(Parser)]
-#[command(name = "sv", version, about = "Storage visualizer engine")]
+#[command(name = "plumb", version, about = "Sound the real depth of your disk: what deleting actually frees")]
 struct Cli {
     #[arg(long, global = true)]
     json: bool,
@@ -123,8 +123,8 @@ fn load(path: &PathBuf, threads: usize) -> std::io::Result<Tree> {
         std::thread::available_parallelism().map_or(4, |n| n.get())
     } else { threads };
     let mut t = scan(path, threads, |_| {})?;
-    let private = storage_core::scan::private_sizes(&t, path);
-    storage_core::aggregate::aggregate_with_private(&mut t, &private);
+    let private = plumb_core::scan::private_sizes(&t, path);
+    plumb_core::aggregate::aggregate_with_private(&mut t, &private);
     Ok(t)
 }
 
@@ -224,9 +224,9 @@ fn main() -> std::io::Result<()> {
             for p in paths {
                 // Check before scanning: a blocked path should cost nothing,
                 // and walking /System to be told no is absurd.
-                let c = storage_core::blocklist::canon_keep_link(p);
-                let why = storage_core::blocklist::shape_problem(&c)
-                    .or_else(|| storage_core::blocklist::denied(&c));
+                let c = plumb_core::blocklist::canon_keep_link(p);
+                let why = plumb_core::blocklist::shape_problem(&c)
+                    .or_else(|| plumb_core::blocklist::denied(&c));
                 if let Some(why) = why {
                     println!("refused  {}  (blocked: {why})", p.display());
                     blocked.push(p.clone());
@@ -237,7 +237,7 @@ fn main() -> std::io::Result<()> {
                     eprintln!("skipping {}: nothing readable", p.display());
                     continue;
                 }
-                let root = storage_core::blocklist::canon_keep_link(p);
+                let root = plumb_core::blocklist::canon_keep_link(p);
                 let one = plan(&t, &root, &[0]);
                 match &mut all {
                     Some(a) => a.absorb(one),
@@ -277,10 +277,10 @@ fn main() -> std::io::Result<()> {
             if skipped > 0 {
                 println!("  {skipped} skipped: changed between planning and staging");
             }
-            println!("  undo with: sv restore {}", m.id);
+            println!("  undo with: plumb restore {}", m.id);
         }
         Cmd::Staged => {
-            let now = storage_core::clean::now_secs();
+            let now = plumb_core::clean::now_secs();
             let list = list_staged()?;
             if list.is_empty() {
                 println!("nothing staged");
@@ -303,7 +303,7 @@ fn main() -> std::io::Result<()> {
         Cmd::Restore { id } => {
             let n = restore(*id)?;
             println!("restored {n} items from manifest {id}");
-            let left = storage_core::clean::read_manifest(*id)
+            let left = plumb_core::clean::read_manifest(*id)
                 .map(|m| m.items.len())
                 .unwrap_or(0);
             if left > 0 {
@@ -322,7 +322,7 @@ fn main() -> std::io::Result<()> {
             println!("  entries sharing blocks with another path free less than their listed size");
         }
         Cmd::Apps { limit, leftovers, app, guesses } => {
-            let apps = storage_core::apps::list_apps()?;
+            let apps = plumb_core::apps::list_apps()?;
             if apps.is_empty() {
                 println!("no applications found");
                 return Ok(());
@@ -330,16 +330,16 @@ fn main() -> std::io::Result<()> {
             if *leftovers {
                 return show_leftovers(&apps, app.as_deref(), *guesses, *limit);
             }
-            let mut sized: Vec<(u64, usize, &storage_core::apps::App)> = apps
+            let mut sized: Vec<(u64, usize, &plumb_core::apps::App)> = apps
                 .iter()
                 .enumerate()
-                .map(|(i, a)| (storage_core::apps::dir_bytes(&a.path), i, a))
+                .map(|(i, a)| (plumb_core::apps::dir_bytes(&a.path), i, a))
                 .collect();
             sized.sort_by_key(|(b, _, _)| std::cmp::Reverse(*b));
             let mut contested = 0usize;
             for (bytes, i, a) in sized.iter().take(*limit) {
                 let id = a.bundle_id.as_deref().unwrap_or("(no bundle id)");
-                let with = storage_core::apps::contesting_ids(&apps, *i);
+                let with = plumb_core::apps::contesting_ids(&apps, *i);
                 let shared = if with.is_empty() { "" } else { "  [id shared]" };
                 if !with.is_empty() {
                     contested += 1;
@@ -362,9 +362,9 @@ fn main() -> std::io::Result<()> {
         }
         Cmd::Dupes { path, min_size, limit, dedupe, dry_run } => {
             let t = load(path, cli.threads)?;
-            let root = storage_core::blocklist::canon_keep_link(path);
+            let root = plumb_core::blocklist::canon_keep_link(path);
             let started = std::time::Instant::now();
-            let groups = storage_core::dupes::find(&t, &root, *min_size);
+            let groups = plumb_core::dupes::find(&t, &root, *min_size);
             let took = started.elapsed();
             if groups.is_empty() {
                 println!("no duplicates found in {:?}", took);
@@ -380,22 +380,22 @@ fn main() -> std::io::Result<()> {
                         m.path.display());
                 }
             }
-            let total = storage_core::dupes::total_reclaimable(&groups);
+            let total = plumb_core::dupes::total_reclaimable(&groups);
             println!("\n  {} group(s) in {:?}", groups.len(), took);
             println!("  {} reclaimable  (already-shared copies excluded)", human(total));
 
             if !dedupe {
-                if storage_core::reflink::supported(&root) {
-                    println!("  this mount supports reflinks: sv dupes {} --dedupe --dry-run",
+                if plumb_core::reflink::supported(&root) {
+                    println!("  this mount supports reflinks: plumb dupes {} --dedupe --dry-run",
                         path.display());
                 }
                 return Ok(());
             }
-            if !storage_core::reflink::supported(&root) {
+            if !plumb_core::reflink::supported(&root) {
                 println!("\n  this mount does not support reflinks; nothing to do");
                 return Ok(());
             }
-            let r = storage_core::reflink::dedupe_groups(&groups, *dry_run);
+            let r = plumb_core::reflink::dedupe_groups(&groups, *dry_run);
             println!("\n{}", if *dry_run { "dry run, nothing changed:" } else { "deduped:" });
             for d in &r.done {
                 println!("  {:>10}  {}\n              shares with {}",
@@ -422,7 +422,7 @@ fn main() -> std::io::Result<()> {
                             .map(|s| s.to_string_lossy().replace(['/', ' '], "_"))
                             .unwrap_or_else(|| "root".into());
                         snapshot::snapshots_dir()?
-                            .join(format!("{stem}-{}.svsnap", storage_core::clean::now_secs()))
+                            .join(format!("{stem}-{}.plumbsnap", plumb_core::clean::now_secs()))
                     }
                 };
                 let started = std::time::Instant::now();
@@ -458,7 +458,7 @@ fn main() -> std::io::Result<()> {
                 let a = snapshot::Snapshot::open(old)?;
                 let b = snapshot::Snapshot::open(new)?;
                 let started = std::time::Instant::now();
-                let changes = storage_core::diff::diff(a.tree(), b.tree());
+                let changes = plumb_core::diff::diff(a.tree(), b.tree());
                 let took = started.elapsed();
                 if changes.is_empty() {
                     println!("no changes ({} vs {} nodes)", a.len(), b.len());
@@ -500,12 +500,12 @@ fn main() -> std::io::Result<()> {
 /// Report what each application left behind. Read-only in every branch: this
 /// prints and nothing else.
 fn show_leftovers(
-    apps: &[storage_core::apps::App],
+    apps: &[plumb_core::apps::App],
     filter: Option<&str>,
     guesses: bool,
     limit: usize,
 ) -> std::io::Result<()> {
-    use storage_core::apps::{self, LeftoverOpts};
+    use plumb_core::apps::{self, LeftoverOpts};
 
     let needle = filter.map(|f| f.to_lowercase());
     // Carry the slot: the sibling guard excludes an app by position, not by
@@ -560,10 +560,10 @@ fn show_leftovers(
 /// Review an uninstall, and with `--yes` route it through staging.
 ///
 /// Nothing is deleted here or anywhere downstream: staging is a rename into
-/// an app-owned directory that `sv restore` reverses and only `sv commit`
+/// an app-owned directory that `plumb restore` reverses and only `plumb commit`
 /// makes permanent.
 fn uninstall(needle: &str, yes: bool, guesses: bool, threads: usize) -> std::io::Result<()> {
-    use storage_core::apps::{self, AppProvider, LeftoverOpts};
+    use plumb_core::apps::{self, AppProvider, LeftoverOpts};
 
     let mut local = apps::Local::new()?;
     local.opts = LeftoverOpts { include_name_matches: guesses };
@@ -579,7 +579,7 @@ fn uninstall(needle: &str, yes: bool, guesses: bool, threads: usize) -> std::io:
 
     // An exact name or id wins outright. Substring alone left any application
     // whose name or bundle id is a prefix of another's permanently
-    // unselectable - `sv uninstall Codex` listed Codex and ChatGPT and refused
+    // unselectable - `plumb uninstall Codex` listed Codex and ChatGPT and refused
     // to act, with nothing the user could type to break the tie.
     let exact: Vec<&apps::App> = picked
         .iter()
@@ -637,19 +637,19 @@ fn uninstall(needle: &str, yes: bool, guesses: bool, threads: usize) -> std::io:
     // Plan everything first. A refusal of the bundle itself is fatal, and
     // finding that out after booting out the app's helpers would leave a
     // stopped application that is still installed.
-    let prepared = storage_core::apps::prepare_uninstall(&plan, threads)?;
+    let prepared = plumb_core::apps::prepare_uninstall(&plan, threads)?;
     for (path, why) in &prepared.refused {
         println!("  refused  {}  ({why})", path.display());
     }
 
     // Only now stop the background jobs, so a running helper cannot recreate
     // what is about to move.
-    for (label, why) in storage_core::apps::perform_unload(&plan) {
+    for (label, why) in plumb_core::apps::perform_unload(&plan) {
         println!("  {label}: {why}");
     }
 
     let planned = prepared.count();
-    let m = storage_core::apps::stage_prepared(&prepared, &format!("uninstall {}", plan.app))?;
+    let m = plumb_core::apps::stage_prepared(&prepared, &format!("uninstall {}", plan.app))?;
     println!("\n  staged {} items, {} -> manifest {}", m.items.len(), human(m.total_bytes), m.id);
     // Only the gap between planning and moving is a TOCTOU skip. Anything the
     // planner declined was already printed above with its real reason.
@@ -657,14 +657,14 @@ fn uninstall(needle: &str, yes: bool, guesses: bool, threads: usize) -> std::io:
     if changed > 0 {
         println!("  {changed} skipped: changed between planning and staging");
     }
-    println!("  undo with: sv restore {}", m.id);
+    println!("  undo with: plumb restore {}", m.id);
     Ok(())
 }
 
 /// Follow a directory. Prints one line per coalesced event, never one per raw
 /// event, which is the difference between usable and unusable during a build.
 fn watch(path: &PathBuf, seconds: u64, tick: u64, poll: bool, every: u64) -> std::io::Result<()> {
-    use storage_core::watch::{watcher, Feed, Poll, Watcher};
+    use plumb_core::watch::{watcher, Feed, Poll, Watcher};
 
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
     let mut w: Box<dyn Watcher> = if poll {

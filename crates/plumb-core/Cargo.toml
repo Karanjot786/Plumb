@@ -1,5 +1,5 @@
 [package]
-name = "storage-core"
+name = "plumb-core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

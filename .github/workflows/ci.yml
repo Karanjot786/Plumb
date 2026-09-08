@@ -4,7 +4,7 @@
 # by running it, so each job creates a fixture with a hardlink in it and checks
 # that the scanner reports what deleting it would actually free. Windows and
 # Linux have never executed this code on real hardware; that is what this is
-# for. storage-ui is skipped: it needs webkit2gtk, and the shell is not what
+# for. plumb-ui is skipped: it needs webkit2gtk, and the shell is not what
 # is unverified here.
 name: ci
 
@@ -27,7 +27,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: build
-        run: cargo build -p storage-cli --locked
+        run: cargo build -p plumb-cli --locked
 
       # A 50 MiB file, a hardlink to it, and a 10 MiB file. Logical size counts
       # the link twice; freeable must not. That single assertion is the whole
@@ -41,7 +41,7 @@ jobs:
           dd if=/dev/zero of="$F/a/big.bin" bs=1048576 count=50 2>/dev/null
           ln "$F/a/big.bin" "$F/b/hard.bin"
           dd if=/dev/zero of="$F/a/solo.bin" bs=1048576 count=10 2>/dev/null
-          out=$(cargo run -q -p storage-cli -- scan "$F")
+          out=$(cargo run -q -p plumb-cli -- scan "$F")
           echo "$out"
           echo "$out" | grep -q "shared" \
             || { echo "FAIL: hardlink family not detected"; exit 1; }
@@ -66,7 +66,7 @@ jobs:
           $fs = [IO.File]::Create("$F\a\solo.bin")
           for ($i=0; $i -lt 10; $i++) { $fs.Write($buf,0,$buf.Length) }
           $fs.Close()
-          $out = cargo run -q -p storage-cli -- scan "$F" | Out-String
+          $out = cargo run -q -p plumb-cli -- scan "$F" | Out-String
           Write-Host $out
           if ($out -notmatch "shared") {
             Write-Error "FAIL: hardlink family not detected on NTFS"
@@ -86,10 +86,10 @@ jobs:
           set -euo pipefail
           F="$RUNNER_TEMP/st"; mkdir -p "$F/junk"
           dd if=/dev/zero of="$F/junk/x.bin" bs=1048576 count=12 2>/dev/null
-          cargo run -q -p storage-cli -- clean "$F/junk"
+          cargo run -q -p plumb-cli -- clean "$F/junk"
           [ ! -e "$F/junk" ] || { echo "FAIL: staging left the source in place"; exit 1; }
-          id=$(cargo run -q -p storage-cli -- staged | grep -oE '[0-9]{6,}' | head -1)
-          cargo run -q -p storage-cli -- restore "$id"
+          id=$(cargo run -q -p plumb-cli -- staged | grep -oE '[0-9]{6,}' | head -1)
+          cargo run -q -p plumb-cli -- restore "$id"
           [ -e "$F/junk/x.bin" ] || { echo "FAIL: restore did not put it back"; exit 1; }
           echo "staging round-trip ok (manifest $id)"
 
@@ -104,10 +104,10 @@ jobs:
           $fs = [IO.File]::Create("$F\junk\x.bin")
           for ($i=0; $i -lt 12; $i++) { $fs.Write($buf,0,$buf.Length) }
           $fs.Close()
-          cargo run -q -p storage-cli -- clean "$F\junk"
+          cargo run -q -p plumb-cli -- clean "$F\junk"
           if (Test-Path "$F\junk") { Write-Error "FAIL: staging left the source in place" }
-          $id = (cargo run -q -p storage-cli -- staged | Select-String -Pattern '\d{6,}').Matches[0].Value
-          cargo run -q -p storage-cli -- restore $id
+          $id = (cargo run -q -p plumb-cli -- staged | Select-String -Pattern '\d{6,}').Matches[0].Value
+          cargo run -q -p plumb-cli -- restore $id
           if (-not (Test-Path "$F\junk\x.bin")) { Write-Error "FAIL: restore did not put it back" }
           Write-Host "staging round-trip ok (manifest $id)"
 
@@ -126,9 +126,9 @@ jobs:
             for f in $(seq 1 100); do echo x > "$B/d$d/f$f"; done
           done
           echo "files: $(find "$B" -type f | wc -l)"
-          cargo build -q -p storage-cli --release --locked
+          cargo build -q -p plumb-cli --release --locked
           for i in 1 2 3; do
-            ./target/release/sv scan "$B" | grep -E "scan time|contents"
+            ./target/release/plumb scan "$B" | grep -E "scan time|contents"
           done
 
   # The rasterize-in-Rust-and-blit-once architecture was chosen *because*
@@ -149,4 +149,4 @@ jobs:
             libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
             librsvg2-dev patchelf libsoup-3.0-dev
       - name: build the app
-        run: cargo build -p storage-ui --locked
+        run: cargo build -p plumb-ui --locked

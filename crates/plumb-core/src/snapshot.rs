@@ -217,7 +217,7 @@ pub fn list() -> io::Result<Vec<Entry>> {
     for e in fs::read_dir(dir)? {
         let Ok(e) = e else { continue };
         let path = e.path();
-        if path.extension().is_none_or(|x| x != "svsnap") {
+        if path.extension().is_none_or(|x| x != "plumbsnap") {
             continue;
         }
         let Ok(m) = e.metadata() else { continue };

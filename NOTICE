@@ -1,4 +1,4 @@
-Storage Visualizer
+Plumb
 Copyright 2026 Karanjot786
 
 This product includes software developed by Karanjot786.
@@ -34,8 +34,8 @@ Huizing and van Wijk (2000) and as implemented in d3-hierarchy (ISC). No code
 was taken from any GPL-licensed disk analyzer.
 
 Five transitive dependencies are MPL-2.0, all of them reached only through
-Tauri and so present only in the desktop app, never in `storage-core` or the
-`sv` CLI (verified with `cargo tree -p storage-core` and `-p storage-cli`,
+Tauri and so present only in the desktop app, never in `plumb-core` or the
+`plumb` CLI (verified with `cargo tree -p plumb-core` and `-p plumb-cli`,
 which report none):
 
   option-ext           via dirs-sys <- dirs <- tauri            (runtime)
