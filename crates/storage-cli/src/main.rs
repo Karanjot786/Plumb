@@ -43,6 +43,12 @@ enum Cmd {
     Restore { id: u64 },
     /// Permanently remove everything in a manifest.
     Commit { id: u64 },
+    /// Find byte-identical files and report what deleting them would free.
+    Dupes {
+        path: PathBuf,
+        #[arg(long, default_value_t = 0)] min_size: u64,
+        #[arg(long, default_value_t = 20)] limit: usize,
+    },
     /// Save, list and compare snapshots of a scanned tree.
     Snapshot {
         #[command(subcommand)]
@@ -276,6 +282,30 @@ fn main() -> std::io::Result<()> {
                 println!("  {} item(s) left staged; the manifest still lists them", r.skipped.len());
             }
             println!("  entries sharing blocks with another path free less than their listed size");
+        }
+        Cmd::Dupes { path, min_size, limit } => {
+            let t = load(path, cli.threads)?;
+            let root = storage_core::blocklist::canon_keep_link(path);
+            let started = std::time::Instant::now();
+            let groups = storage_core::dupes::find(&t, &root, *min_size);
+            let took = started.elapsed();
+            if groups.is_empty() {
+                println!("no duplicates found in {:?}", took);
+                return Ok(());
+            }
+            for g in groups.iter().take(*limit) {
+                println!("{:>10} each x{} names, {} physical cop{}  ->  {} reclaimable",
+                    human(g.bytes_each), g.members.len(), g.copies,
+                    if g.copies == 1 { "y" } else { "ies" },
+                    human(g.reclaimable));
+                for m in &g.members {
+                    println!("     {} {}", if m.shared { "[shares blocks]" } else { "               " },
+                        m.path.display());
+                }
+            }
+            let total = storage_core::dupes::total_reclaimable(&groups);
+            println!("\n  {} group(s) in {:?}", groups.len(), took);
+            println!("  {} reclaimable  (already-shared copies excluded)", human(total));
         }
         Cmd::Snapshot { cmd } => match cmd {
             SnapCmd::Save { path, out } => {
