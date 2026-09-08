@@ -931,6 +931,40 @@ pub fn uninstall_plan(app: &App, others: &[String], opts: LeftoverOpts) -> Clean
     plan_from(app, &associated_for(app, others, opts))
 }
 
+/// What staging these items actually frees, aggregated the way `clean::plan`
+/// aggregates it — per item, then summed, which is exactly how the manifest's
+/// total is built.
+///
+/// `dir_bytes` sums `blocks` per file and is blind to hardlinks and clones, so
+/// it over-counts any family living inside the set: a 40 MiB file with one link
+/// beside it read as 80 MiB. That is fine for the *list*, which is a browse
+/// aid, but the review is where the user decides, and it promised 83 MB for a
+/// staging run whose manifest then said 43 MB. Over-promising reclaimable space
+/// is the one thing this tool must never do.
+fn honest_bytes(items: &mut [Removable]) -> u64 {
+    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    items
+        .iter_mut()
+        .map(|r| {
+            let root = crate::blocklist::canon_keep_link(r.path());
+            // A scan that will not run is not a reason to invent a number;
+            // fall back to the naive one rather than silently reporting zero.
+            let Ok(mut tree) = crate::scan(&root, threads, |_| {}) else {
+                return r.item().bytes;
+            };
+            if tree.is_empty() {
+                return 0;
+            }
+            let private = crate::scan::private_sizes(&tree, &root);
+            crate::aggregate::aggregate_with_private(&mut tree, &private);
+            // Write it back, so the rows the user reads sum to the total the
+            // user reads. A correct header over naive rows is its own lie.
+            r.0.bytes = tree.sub_excl[0];
+            r.0.bytes
+        })
+        .sum()
+}
+
 /// Build the plan from associations that were already discovered.
 ///
 /// This is what lets one scan serve the list, the review sheet and the
@@ -939,7 +973,8 @@ pub fn uninstall_plan(app: &App, others: &[String], opts: LeftoverOpts) -> Clean
 /// the user launches the app and it recreates its container - would be staged
 /// without ever having been shown.
 pub fn plan_from(app: &App, found: &[Associated]) -> CleanupPlan {
-    let items = stageable(found);
+    let mut items = stageable(found);
+    let bytes = honest_bytes(&mut items);
     let excluded: Vec<(PathBuf, &'static str)> = found
         .iter()
         .filter_map(|a| exclusion_reason(a).map(|why| (a.path.clone(), why)))
@@ -958,7 +993,7 @@ pub fn plan_from(app: &App, found: &[Associated]) -> CleanupPlan {
         }
     }
 
-    let bytes = items.iter().map(|r| r.item().bytes).sum();
+
     debug_assert!(
         items.iter().all(|r| !is_system_path(r.path())),
         "a system path reached a CleanupPlan"

@@ -867,9 +867,24 @@ fn app_detail(idx: usize, state: tauri::State<'_, App>) -> Result<AppDetail, Str
     let excluded: Vec<AssocOut> =
         found.iter().filter(|i| apps::exclusion_reason(i).is_some()).map(assoc_out).collect();
 
+    // The plan recomputed each stageable item's size honestly (hardlink- and
+    // clone-aware). Carry those numbers into the inventory list too, so every
+    // figure on this screen comes from one accounting rather than two.
+    let honest: std::collections::HashMap<&std::path::Path, u64> =
+        plan.items.iter().map(|r| (r.path(), r.item().bytes)).collect();
+
     let detail = AppDetail {
         app: app_out(idx, a, found, !apps::contesting_ids(&cache.apps, idx).is_empty()),
-        items: found.iter().map(assoc_out).collect(),
+        items: found
+            .iter()
+            .map(|i| {
+                let mut o = assoc_out(i);
+                if let Some(&b) = honest.get(i.path.as_path()) {
+                    o.bytes = b;
+                }
+                o
+            })
+            .collect(),
         unload: plan.unload.iter().map(|u| u.label()).collect(),
         stage_bytes: plan.bytes,
         token: next_token(),
