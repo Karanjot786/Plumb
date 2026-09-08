@@ -17,6 +17,9 @@ const S = {
   rects: [],
   geom: 0,
   hover: -1,
+  // Selected node id, NOT a rect index: indices are invalidated by every
+  // relayout, but the selection must survive resize, depth and view changes.
+  sel: -1,
   css: { w: 0, h: 0 },
 };
 
@@ -228,6 +231,7 @@ async function draw() {
   const px = new Uint8ClampedArray(u8.buffer, u8.byteOffset + off, pw * ph * 4);
   ictx.putImageData(new ImageData(px, pw, ph), 0, 0);
   S.hover = -1;
+  paintOverlay();
   octx.clearRect(0, 0, pw, ph);
 }
 
@@ -264,16 +268,8 @@ function hit(mx, my) {
   return -1;
 }
 
-function highlight(i) {
-  const dpr = window.devicePixelRatio || 1;
-  octx.clearRect(0, 0, overlay.width, overlay.height);
-  if (i < 0) return;
+function traceRect(i) {
   const q = S.rects[i];
-  octx.save();
-  octx.scale(dpr, dpr);
-  octx.lineWidth = 2;
-  octx.strokeStyle = "#3a352c";
-  octx.fillStyle = "rgba(255,255,255,0.18)";
   octx.beginPath();
   if (S.geom === 1) {
     const cx = S.css.w / 2, cy = S.css.h / 2;
@@ -286,9 +282,52 @@ function highlight(i) {
   } else {
     octx.rect(q.x + 1, q.y + 1, Math.max(1, q.w - 2), Math.max(1, q.h - 2));
   }
-  octx.fill();
-  octx.stroke();
+}
+
+/// Index of the selected node in the current rect list, or -1 if the selection
+/// is not on screen (culled, or we navigated elsewhere).
+function selIndex() {
+  return S.sel < 0 ? -1 : S.rects.findIndex((q) => q.id === S.sel);
+}
+
+/// Paints hover and selection together. Selection is drawn last and heavier so
+/// it stays legible under the cursor. Selection persists; hover does not.
+function paintOverlay() {
+  const dpr = window.devicePixelRatio || 1;
+  octx.clearRect(0, 0, overlay.width, overlay.height);
+  const si = selIndex();
+  if (S.hover < 0 && si < 0) return;
+  octx.save();
+  octx.scale(dpr, dpr);
+  if (S.hover >= 0 && S.hover !== si) {
+    octx.lineWidth = 2;
+    octx.strokeStyle = "#3a352c";
+    octx.fillStyle = "rgba(255,255,255,0.18)";
+    traceRect(S.hover);
+    octx.fill();
+    octx.stroke();
+  }
+  if (si >= 0) {
+    octx.lineWidth = 3;
+    octx.strokeStyle = "#1d1a15";
+    octx.fillStyle = "rgba(255,255,255,0.34)";
+    traceRect(si);
+    octx.fill();
+    octx.stroke();
+    octx.setLineDash([5, 3]);
+    octx.lineWidth = 1;
+    octx.strokeStyle = "#fdfaf2";
+    traceRect(si);
+    octx.stroke();
+    octx.setLineDash([]);
+  }
   octx.restore();
+}
+
+// Kept so existing call sites still work; hover index in, full repaint out.
+function highlight(i) {
+  S.hover = i;
+  paintOverlay();
 }
 
 let inspectId = -1;
@@ -347,8 +386,9 @@ async function inspect(id) {
 const tray = new Map();
 
 $("add-cleanup").onclick = () => {
-  if (inspectId < 0) return;
-  tray.set(inspectId, $("i-name").textContent);
+  const id = S.sel >= 0 ? S.sel : inspectId;
+  if (id < 0) return;
+  tray.set(id, $("i-name").textContent);
   paintTray();
 };
 $("tray-clear").onclick = () => { tray.clear(); paintTray(); };
@@ -466,16 +506,30 @@ overlay.parentElement.addEventListener("mousemove", (e) => {
   const i = hit(e.clientX - r.left, e.clientY - r.top);
   if (i === S.hover) return;
   S.hover = i;
-  highlight(i);
-  if (i >= 0) inspect(S.rects[i].id);
+  paintOverlay();
+  // With nothing selected, hover previews. Once the user has selected, the
+  // inspector belongs to the selection - otherwise moving the mouse toward
+  // "Add to Cleanup" would silently retarget it.
+  if (i >= 0 && S.sel < 0) inspect(S.rects[i].id);
 });
 
 overlay.parentElement.addEventListener("mouseleave", () => {
   S.hover = -1;
-  highlight(-1);
+  paintOverlay();
 });
 
-overlay.parentElement.addEventListener("click", async (e) => {
+overlay.parentElement.addEventListener("click", (e) => {
+  if (!S.rects.length) return;
+  const r = image.getBoundingClientRect();
+  const i = hit(e.clientX - r.left, e.clientY - r.top);
+  if (i < 0) { S.sel = -1; paintOverlay(); return; }
+  S.sel = S.rects[i].id;
+  inspect(S.sel);
+  paintOverlay();
+});
+
+// Navigation moved to double-click so a single click can mean "select".
+overlay.parentElement.addEventListener("dblclick", async (e) => {
   if (!S.rects.length) return;
   const r = image.getBoundingClientRect();
   const i = hit(e.clientX - r.left, e.clientY - r.top);
