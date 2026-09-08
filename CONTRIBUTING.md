@@ -1,44 +1,48 @@
 # Contributing
 
-## The one rule that will surprise you
+## The rule likely to surprise you
 
-**This project has no test files.** No `#[test]`, no test framework, no `tests/`
-directory. Please do not add one.
+This project has no test files. No `#[test]`, no test framework, no `tests/` directory.
+Do not add one.
 
-Correctness lives in two places instead:
+Correctness lives in two places instead.
 
-1. **`debug_assert!` inside the code**, stating invariants at the point where they must
-   hold. They compile out of release builds, so they cost shipping users nothing and
-   catch developers immediately.
-2. **Running the binary against a throwaway fixture.** Build a directory with the
-   property you care about — a hardlink, a clone, a sparse file, a symlink pointing out
-   of the tree — and run `plumb` at it.
+- `debug_assert!` inside the code, stating invariants where they must hold. They compile
+  out of release builds, so shipping users pay nothing and developers see failures
+  immediately.
+- Running the binary against a throwaway fixture. Build a directory with the property you
+  care about, such as a hardlink, a clone, a sparse file, or a symlink pointing out of the
+  tree, then run `plumb` at it.
 
-This is not a preference dressed up as a policy. Every serious defect this project has
-had was found by running it, not by reasoning about it: `freeable` exceeding the bytes
-physically present on any tree containing a hardlink; a `sub_blocks` panic in the
-Linux watch loop; a failed read being reported as a deletion. A unit test suite over
-the pure functions would have caught none of them, because all three lived in the
+The rule comes from evidence, not preference. Every serious defect in this project was
+found by running the code, never by reasoning about it:
+
+- `freeable` exceeded the bytes physically present on any tree holding a hardlink.
+- A `sub_blocks` panic in the Linux watch loop.
+- A failed read reported as a deletion.
+
+A unit test suite over the pure functions catches none of the three. All three live in the
 seam between the code and a real filesystem.
 
-So: **reproduce before you fix.** Observe the wrong behaviour first. A fix for a defect
-you never reproduced is a guess, and in a tool that moves files a guess is expensive.
+Reproduce before you fix. Observe the wrong behaviour first. A fix for a defect you never
+reproduced is a guess, and guesses cost files in a tool moving them.
 
 ## Getting set up
 
 ```bash
-cargo build                       # workspace
+cargo build
 cargo run -p plumb-cli -- scan ~/Downloads
 ```
 
-For the desktop app:
+The desktop app:
 
 ```bash
 cargo install tauri-cli --version "^2" --locked
-cargo tauri dev --config crates/plumb-ui/tauri.conf.json
+cd crates/plumb-ui
+cargo tauri dev
 ```
 
-On Linux you will need the WebKitGTK development packages first:
+Linux needs the WebKitGTK development packages first:
 
 ```bash
 sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
@@ -47,50 +51,49 @@ sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
 
 ## Making a fixture
 
-Never point a destructive command at real data during development. Fixtures only.
-Reading real state — listing `/Applications`, scanning a directory — is fine and
-encouraged; a real machine makes a better test than anything synthetic.
+Never point a destructive command at real data during development. Use fixtures. Reading
+real state stays fine and useful. Listing `/Applications` or scanning a directory tells
+you more than anything synthetic.
 
 ```bash
 F=$(mktemp -d)
 mkdir -p "$F/a" "$F/b"
 dd if=/dev/zero of="$F/a/big.bin" bs=1m count=50
-ln "$F/a/big.bin" "$F/b/hard.bin"          # the whole thesis in one line
-cargo run -p plumb-cli -- scan "$F"      # freeable must be below logical
+ln "$F/a/big.bin" "$F/b/hard.bin"          # the thesis in one line
+cargo run -p plumb-cli -- scan "$F"        # freeable must land below logical
 ```
 
 ## Where things live
 
-| Crate | What it is |
+| Crate | Contents |
 | --- | --- |
 | `plumb-core` | The engine. Scanning, accounting, layout, rasterizing, staging, apps, watch. |
-| `plumb-cli` | `plumb`. A thin shell over the engine; every feature is reachable here first. |
-| `plumb-ui` | The Tauri desktop app. Commands only — no logic that is not in the core. |
+| `plumb-cli` | `plumb`. A thin shell over the engine. Every feature lands here first. |
+| `plumb-ui` | The Tauri desktop app. Commands only, no logic missing from the core. |
 
 The handoff notes and the design document live in a separate private repository,
-`Plumb_docs`. The handoff records what is verified by having been run versus what merely
-compiles, which is a distinction this project takes seriously; the design document is
-§-numbered and is the reference for why things are the way they are. Neither ships with
-the code.
+`Plumb_docs`. The handoff records what has been verified by running versus what only
+compiles, a distinction this project takes seriously. The design document is
+section-numbered and explains why things work the way they do. Neither ships with the
+code.
 
 ## House style
 
-- **Vendor or depend, never rewrite.** If working code exists, reuse it. `dua-core`
-  replaced a hand-written scanner; a d3-derived squarify replaced a hand-rolled
-  treemap. Both were improvements.
-- **Licence hygiene.** The best prior art in this space is GPL — WinDirStat, rmlint,
-  qdirstat, BleachBit. Take concepts from prose and issue threads; **never read their
-  source.** Their path lists and rule files are the copyrightable asset. This project is
-  Apache-2.0 and intends to stay unencumbered.
-- **Refusing beats guessing.** Anywhere a safety check cannot fully verify something,
-  it says no. Refusing costs the user a click; guessing costs them a file.
-- **Comments explain why, not what.** The code says what it does.
+- Vendor or depend, never rewrite. Reuse working code. `dua-core` replaced a hand-written
+  scanner. A d3-derived squarify replaced a hand-rolled treemap. Both were improvements.
+- Licence hygiene. The strongest prior art here carries the GPL: WinDirStat, rmlint,
+  qdirstat, BleachBit. Take concepts from prose and issue threads. Never read their
+  source. Their path lists and rule files are the copyrightable asset. This project stays
+  Apache-2.0 and unencumbered.
+- Refusing beats guessing. Where a safety check cannot fully verify something, refuse.
+  Refusing costs a click. Guessing costs a file.
+- Comments explain why. The code already says what.
 
 ## Commits and pull requests
 
-One commit per logical change, with a message that explains **why** — the reasoning is
-the part that cannot be recovered from the diff. CI builds *and runs* the CLI on
-Windows, Linux and macOS against a fixture containing a hardlink; it must stay green.
+One commit per logical change, with a message explaining why. The reasoning is the part
+no one recovers from the diff. Continuous integration builds and runs the CLI on Windows,
+Linux and macOS against a fixture containing a hardlink. Keep it green.
 
-By contributing you agree that your contributions are licensed under Apache-2.0, per
-section 5 of the licence.
+Contributing means licensing your contribution under Apache-2.0, per section 5 of the
+licence.

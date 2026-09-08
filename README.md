@@ -1,197 +1,223 @@
 # Plumb
 
-**Every other disk analyzer tells you what is big. This one tells you what deleting
-would actually free.**
+Every disk analyzer adds up the size each file claims. Filesystems stopped storing files
+that way years ago. Plumb reports the blocks you get back when you delete something.
 
-Those are not the same number, and the gap is not small. A hardlinked file is counted
-once by the filesystem and twice by every tool that sums `st_size`. An APFS clone —
-which is what `cp` does on a Mac now, and what Time Machine local snapshots are built
-from — shows its full length while sharing every block with its original. A sparse
-file reports terabytes and occupies megabytes. Delete any of them expecting the
-advertised space back and you will not get it.
-
-Plumb models all four — hardlinks, clones, sparse files, snapshots —
-and reports **reclaimable bytes**: the blocks that would genuinely be returned to
-the volume. Shared blocks are credited exactly once, at the lowest common ancestor of
-everything that shares them, so a folder's number is honest no matter where you look
-from. The volume's own free space is reconciled against the total, and whatever cannot
-be attributed is shown as unaccounted rather than quietly absorbed.
+A real scan of a real folder:
 
 ```
-~/Library/Caches
-  logical      14.72 GB
-  allocated    11.94 GB
-  freeable     11.60 GB  <- what deleting actually frees
-  contents     247850 files, 21103 folders
-  scan time    1.891s
+~/Library/Containers
+  logical      460.91 GB
+  allocated    33.11 GB
+  freeable     33.10 GB  <- what deleting actually frees
+  contents     21441 files, 8022 folders
+  scan time    1.087s
 ```
 
----
+The folder reports 460 GB. The disk holds 33.
 
-## Status, honestly
+## Why the two numbers disagree
 
-**v0.1.0. macOS is the tier-1 platform. Binaries are unsigned.**
+Four mechanisms break the naive sum. All four are ordinary. You hit them without doing
+anything unusual.
 
-There is no Apple Developer signature on the app or the CLI, because notarization
-costs $99/yr and this project does not have it. On first launch macOS will refuse to
-open the app. Right-click the app → **Open** → **Open** in the dialog that follows, once;
-after that it launches normally. For the CLI, `xattr -d com.apple.quarantine ./plumb`.
-If that trade is not acceptable to you — for a tool that moves files, it is a fair
-objection — build from source, which is a supported path and produces no quarantine
-flag at all.
+- Hardlinks. One file, several names. The filesystem stores the blocks once. Any tool
+  summing each name counts them once per name. Delete one name and you free nothing.
+- Copy-on-write clones. On APFS, copying a file writes no data. The copy reports its full
+  length and shares every block with the original until one side gets edited. Time
+  Machine local snapshots use the same mechanism.
+- Sparse files. A container disk image advertises the size it might one day reach and
+  occupies only what has been written. The 460 GB above comes from here.
+- Snapshots. Blocks a snapshot references outlive the file referencing them. You delete a
+  file, watch it disappear, and see no change in free space until the snapshot expires.
 
-| Platform | Engine + CLI | Desktop app | Applications tab |
+Plumb models all four on macOS, Linux and Windows. Shared blocks get credited once, at
+the lowest common ancestor of everything sharing them, so a folder's number holds no
+matter where you look from. Plumb reconciles the scan against the volume's real free
+space and reports any remainder as unaccounted instead of absorbing it silently.
+
+## Status
+
+Version 0.1.0. No published releases. Build from source.
+
+| Platform | Engine and CLI | Desktop app | Applications tab |
 | --- | --- | --- | --- |
-| macOS | verified by running | verified by running | **yes** |
-| Linux | verified by running | builds; not yet driven under a real session | no |
-| Windows | builds and runs in CI on real NTFS | never launched | no |
+| macOS | verified by running | verified by running | yes |
+| Linux | verified by running | deb installs and launches | no |
+| Windows | runs in CI on real NTFS | never launched | no |
 
-The Applications tab is **macOS-only**. It reads `/Applications` bundles, their
-`Info.plist` identifiers and the files they leave scattered across
+macOS binaries carry no Apple Developer signature. Notarization costs $99 a year and this
+project has none. macOS blocks the first launch. Right-click the app, choose Open, then
+Open again in the dialog. Once. For the command line tool, run
+`xattr -d com.apple.quarantine ./plumb`. Building from source produces no quarantine flag
+at all.
+
+The Applications tab works on macOS only. Plumb reads `/Applications` bundles, their
+`Info.plist` identifiers, and the files they leave across
 `~/Library/{Application Support,Caches,Preferences,Logs,Saved Application State}`.
-Windows application discovery is not written, so the tab does not appear there.
+Windows application discovery does not exist yet, so the tab stays hidden there.
 
 ## Install
 
-**From source** — the path that works on every platform today:
+The command line tool:
 
 ```bash
 git clone https://github.com/Karanjot786/Plumb
 cd Plumb
-cargo install --path crates/plumb-cli    # installs `plumb`
+cargo install --path crates/plumb-cli
+plumb scan ~/Downloads
 ```
 
-**The desktop app**, from the same checkout:
+The desktop app, from the same checkout:
 
 ```bash
 cargo install tauri-cli --version "^2" --locked
-cargo tauri build --config crates/plumb-ui/tauri.conf.json
+cd crates/plumb-ui
+cargo tauri build
 ```
 
-produces a `.dmg` and `.app` on macOS, a `.deb` and `.AppImage` on Linux.
+You get a `.dmg` and `.app` on macOS, a `.deb` and `.AppImage` on Linux.
 
-Linux build dependencies, the exact set CI settles on:
+Linux build dependencies, the exact set continuous integration settles on:
 
 ```bash
 sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
   libayatana-appindicator3-dev librsvg2-dev patchelf libsoup-3.0-dev
 ```
 
-## Safety — read this part
+The `.deb` declares the matching runtime packages, so `apt` resolves them for you on
+install.
 
-This tool moves files. The design is one sentence:
+## Safety
 
-> **Nothing is ever deleted except by `commit`, and everything `commit` can delete is
-> described by a manifest that was written to disk before the first file moved.**
+Plumb moves files. Read this section before running `clean`.
 
-What that means in practice:
+The design fits in one sentence. Nothing gets deleted except by `commit`, and everything
+`commit` deletes appears in a manifest written to disk before the first file moves.
 
-- **`clean` stages, it does not delete.** Selected paths are `rename(2)`d into a
-  private staging directory on the *same volume*, so the move is atomic and costs no
-  extra space. If a same-device staging directory cannot be created, the item is
-  **refused** — there is no fallback that copies, and none that deletes.
-- **The manifest is written first.** A crash at any point after that leaves something
-  `plumb restore` can finish. The manifest records each item's original path, its staged
-  path, its size, and its `(dev, ino, mtime)` identity.
-- **Undo is one command.** `plumb restore <id>` puts everything back. Restore never
-  clobbers: if something now occupies the original path, that item stays staged and
-  stays listed rather than overwriting whatever is there.
-- **Deletion is explicit and separate.** `plumb commit <id>` is the only function in the
-  entire project that removes anything, and it refuses any path that is not inside a
-  staging directory. That check is a runtime gate, not a debug assertion — it is
-  compiled into release builds and it is the last thing standing between a path-handling
-  bug and your home directory.
-- **Identity is re-checked immediately before every move.** If the file changed between
-  being inspected and being staged, it is skipped. Comparing path strings would not
-  survive a rename in that window; `(dev, ino, mtime)` does.
-- **A deny list guards the obvious catastrophes**, compared by inode rather than by
-  string so a symlinked alias to `/System` is caught too. On top of it, structural rules
-  refuse any path that is not absolute, contains `.` or `..`, has an empty component,
-  sits fewer than two levels from a volume root, *is* your home directory, or contains
-  it. A collapsed shell variable cannot turn `/Users/$USER/$LEAF` into `/Users`.
-- **Mount points are never staged**, symlinks are moved as links and never followed out
-  of the tree, and files a system package manager claims (`dpkg`, `rpm`, `pacman`) are
-  refused.
-- **Uninstall shows guesses; it never stages them.** Application leftovers matched by
-  bundle identifier are staged. Matches made on the application's *name* are shown
-  under "left alone", because two apps can share a name and one of them is not the one
-  you are removing. `--guesses` widens what is displayed, never what is touched.
+What the design gives you:
 
-Staged items live for 30 days by default. `plumb staged` lists every pending manifest.
+- `clean` stages. `clean` does not delete. Plumb renames selected paths into a private
+  staging directory on the same volume, so the move stays atomic and costs no extra
+  space. Without a same-volume staging directory, Plumb refuses the item. No fallback
+  copies. No fallback deletes.
+- The manifest lands first. A crash after the write leaves something `plumb restore`
+  finishes. Each entry records the original path, the staged path, the size, and the
+  `(dev, ino, mtime)` identity.
+- Undo takes one command. `plumb restore <id>` returns everything. Restore never
+  clobbers. If something now occupies the original path, the item stays staged and stays
+  listed instead of overwriting your file.
+- Deletion stays explicit and separate. `plumb commit <id>` is the only function in the
+  project removing anything. The gate refusing paths outside staging runs in release
+  builds, not as a debug assertion.
+- Plumb re-checks identity immediately before every move. A file changed between
+  inspection and staging gets skipped. Path strings would not survive a rename in the
+  window. `(dev, ino, mtime)` does.
+- A deny list guards the obvious catastrophes, matched by inode rather than by string, so
+  a symlinked alias to `/System` gets caught too. Structural rules refuse any path
+  lacking an absolute form, containing `.` or `..`, holding an empty component, sitting
+  fewer than two levels from a volume root, equal to your home directory, or containing
+  your home directory. A collapsed shell variable never turns `/Users/$USER/$LEAF` into
+  `/Users`.
+- Plumb never stages a mount point, moves symlinks as links without following them out of
+  the tree, and refuses files a system package manager claims through `dpkg`, `rpm` or
+  `pacman`.
+- Uninstall shows guesses and never stages them. Plumb stages leftovers matched by bundle
+  identifier. Matches made on an application name appear under "left alone", because two
+  apps share a name and one of them is not the one you are removing. `--guesses` widens
+  the display, never the action.
+
+Staged items live 30 days by default. `plumb staged` lists every pending manifest.
+
+## Known issues
+
+Two defects sit in the staging gate. Both were reproduced by running the release binary
+against fixtures, and neither is fixed. Read them before trusting `commit` with anything
+you cannot lose.
+
+- A symlink planted inside the staging directory redirects `commit` outside staging. The
+  gate checks the prefix of a path and the type of the final component, and skips
+  everything between. Reaching the defect requires write access inside your own home
+  directory, so an attacker who reaches it already has your files. The defect still sits
+  in the only function deleting anything.
+- A symlink anywhere in the Application Support path makes `commit` refuse every item
+  permanently. The gate resolves the staging root to its real path while the manifest
+  stores the unresolved one, and the comparison then fails forever. Nothing gets lost.
+  `plumb restore` still returns your files. You lose the ability to free the space.
+
+Fix both together. Resolving both sides of the comparison closes the second defect and
+the first, but only when the resolved path reaches the removal call.
 
 ## The eight views
 
-All eight are rasterized in Rust with `tiny-skia` and blitted to the canvas as a single
-image, rather than drawn as DOM or Canvas 2D primitives. That is why a tree with a
-quarter of a million nodes stays interactive, and why the frontend behaves the same on
-WebKitGTK as it does on WKWebView.
+Plumb rasterizes all eight in Rust with `tiny-skia` and blits one image to the canvas
+instead of drawing DOM or Canvas 2D primitives. A tree of a quarter million nodes stays
+interactive, and the frontend behaves the same on WebKitGTK as on WKWebView.
 
-| View | What it is for |
+| View | Use |
 | --- | --- |
-| **Treemap** | The default. Squarified, so tiles stay near-square and comparable by area. |
-| **Folders** | Plain nested rectangles, one level at a time, when the treemap is too dense to read. |
-| **Sunburst** | Radial. Depth reads as distance from the centre, so deep trees stay legible. |
-| **Flame** | Icicle layout. Best for finding one deep expensive path. |
-| **Bubbles** | Circle packing. Emphasises count and clustering over exact area. |
-| **Mind map** | Radial tree. Structure rather than size. |
-| **Top sizes** | A ranked list — here, files anywhere, or folders anywhere. |
-| **Age map** | Coloured by last-modified age. Old and large is the best cleanup signal there is. |
+| Treemap | The default. Squarified, so tiles stay near-square and comparable by area. |
+| Folders | Plain nested rectangles, one level at a time, when the treemap reads too dense. |
+| Sunburst | Radial. Depth reads as distance from the centre, so deep trees stay legible. |
+| Flame | Icicle layout. Best for finding one deep expensive path. |
+| Bubbles | Circle packing. Emphasises count and clustering over exact area. |
+| Mind map | Radial tree. Shows structure rather than size. |
+| Top sizes | A ranked list, scoped to here, to files anywhere, or to folders anywhere. |
+| Age map | Coloured by last-modified age. Old and large is the strongest cleanup signal. |
 
-Every view can be sized by **freeable** (the default), allocated, or logical bytes.
-Switching between them is the fastest way to see the gap this project exists to
-measure.
+Size every view by freeable bytes, the default, or by allocated or logical bytes.
+Switching between them shows you the gap this project measures.
 
-Alongside them: a volume donut reconciling the scan against real free space, quick
-wins, duplicate detection with optional reflink deduplication, snapshot save/diff, and
-a live Monitor that reports what is growing under a directory as it happens.
+Alongside the views: a volume donut reconciling the scan against real free space, quick
+wins, duplicate detection with optional reflink deduplication, snapshot save and diff,
+and a Monitor reporting what grows under a directory as the growth happens.
 
 ## CLI
 
 ```
-plumb scan <path>                    what is here, and what deleting it would free
+plumb scan <path>                    what sits here, and what deleting frees
 plumb top <path> [--files]           the biggest entries
 plumb old <path> [--days 365]        the stalest entries
-plumb dupes <path> [--dedupe]        byte-identical files; --dedupe shares extents instead
-plumb clean <paths...> [--dry-run]   stage for removal. deletes nothing
+plumb dupes <path> [--dedupe]        byte-identical files; --dedupe shares extents
+plumb clean <paths...> [--dry-run]   stage for removal, delete nothing
 plumb staged                         pending manifests
 plumb restore <id>                   put a manifest back
 plumb commit <id>                    permanently remove a manifest's contents
-plumb apps [--leftovers]             installed applications (macOS)
-plumb uninstall <app> [--yes]        review, then stage, an app and what it left behind
+plumb apps [--leftovers]             installed applications, macOS
+plumb uninstall <app> [--yes]        review, then stage, an app and its leftovers
 plumb watch <path>                   report changes as they happen
 plumb snapshot save|list|diff        save and compare scans over time
 ```
 
-`--json` on any command emits machine-readable output.
+Add `--json` to any command for machine-readable output.
 
-## How it works
+## How Plumb works
 
-`dua-core` walks the tree into a flat arena; per-platform syscalls
-(`getattrlistbulk` and `F_LOG2PHYS` on macOS, `statx` on Linux,
-`GetFileInformationByHandle` on Windows) supply the sharing facts the walk cannot see.
-Blocks shared between paths are credited once, at their lowest common ancestor, which
-is what makes a folder's reclaimable number correct rather than merely plausible.
-Snapshots are `rkyv` archives, mapped rather than parsed, so a diff of two scans opens
-instantly.
+`dua-core` walks the tree into a flat arena. Per-platform syscalls supply the sharing
+facts a walk cannot see: `getattrlistbulk` and `F_LOG2PHYS` on macOS, `statx` on Linux,
+`GetFileInformationByHandle` on Windows. Blocks shared between paths get credited once,
+at their lowest common ancestor, which makes a folder's reclaimable number correct rather
+than plausible. Snapshots are `rkyv` archives, mapped rather than parsed, so a diff of two
+scans opens instantly.
 
-The design document, the verified-facts research file and the adversarial audit live in a
-separate private repository, `Plumb_docs`. They are not published with the code.
+The design document, the verified-facts research file and the audits live in a separate
+private repository, `Plumb_docs`. They do not ship with the code.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). One rule is unusual and load-bearing: **this
-project has no test files.** Correctness lives in `debug_assert!` inside the code, and
-every change is verified by building a throwaway fixture and running the binary against
-it. That is not laziness — every serious bug this project has had was found by running
-it, including one where `freeable` exceeded the bytes physically present.
+Read [CONTRIBUTING.md](CONTRIBUTING.md). One rule will surprise you: this project has no
+test files. Correctness lives in `debug_assert!` inside the code, and you verify every
+change by building a throwaway fixture and running the binary against it. Every serious
+bug in this project was found by running it, including one where `freeable` exceeded the
+bytes physically present on the disk.
 
 ## Security
 
-See [SECURITY.md](SECURITY.md).
+Read [SECURITY.md](SECURITY.md).
 
 ## Licence
 
 Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). Apache rather than MIT for the
-explicit patent grant: this tool issues syscalls (`clonefile`, `FIDEDUPERANGE`,
-`FSCTL_QUERY_FILE_LAYOUT`) whose surrounding techniques are patented territory, and a
-bare MIT grant says nothing about patents.
+patent grant. Plumb issues syscalls sitting in patented territory, including `clonefile`,
+`FIDEDUPERANGE` and `FSCTL_QUERY_FILE_LAYOUT`, and a bare MIT grant says nothing about
+patents.
