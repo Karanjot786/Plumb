@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <rect width="1024" height="1024" rx="224" fill="#3a352c"/>
+  <!-- a squarified treemap. the large terracotta block is the reclaimable
+       share; the muted blocks are what merely looks big. -->
+  <g>
+    <rect x="150" y="150" width="408" height="450" rx="12" fill="#a8734a"/>
+    <rect x="150" y="616" width="408" height="258" rx="12" fill="#c4bdb0"/>
+    <rect x="574" y="150" width="300" height="240" rx="12" fill="#d9c48a"/>
+    <rect x="574" y="406" width="300" height="204" rx="12" fill="#8ac5a8"/>
+    <rect x="574" y="626" width="300" height="248" rx="12" fill="#8a9bd9"/>
+  </g>
+</svg>
