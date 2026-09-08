@@ -20,9 +20,39 @@ reason = "system-wide library"
 path = "/private/var/db"
 reason = "system database"
 
+# `exact` on /usr, with its system subtrees denied individually below. A bare
+# ancestor rule on /usr also refused /usr/local, where an installer may put an
+# .app that `from_pkgutil` legitimately finds - and that bundle could then
+# never be uninstalled. Making /usr alone exact would have unprotected
+# /usr/bin and /usr/lib, which is far more than was needed.
 [[deny]]
 path = "/usr"
 reason = "system prefix"
+exact = true
+
+[[deny]]
+path = "/usr/bin"
+reason = "system binaries"
+
+[[deny]]
+path = "/usr/sbin"
+reason = "system binaries"
+
+[[deny]]
+path = "/usr/lib"
+reason = "system libraries"
+
+[[deny]]
+path = "/usr/libexec"
+reason = "system helpers"
+
+[[deny]]
+path = "/usr/share"
+reason = "system data"
+
+[[deny]]
+path = "/usr/include"
+reason = "system headers"
 
 [[deny]]
 path = "/bin"
@@ -32,9 +62,14 @@ reason = "system binaries"
 path = "/sbin"
 reason = "system binaries"
 
+# `exact`, or no application could ever be uninstalled: the ancestor walk in
+# `reason_for` reaches /Applications from every bundle inside it, so
+# `clean::plan` refused /Applications/Foo.app itself. The directory stays
+# protected; the bundles inside it are the whole point of an uninstall.
 [[deny]]
 path = "/Applications"
 reason = "installed applications"
+exact = true
 
 # `exact` denies the directory itself but not what is under it. Without it,
 # every file on every external drive would be refused, since /Volumes is an
@@ -77,9 +112,14 @@ reason = "system libraries"
 path = "/lib64"
 reason = "system libraries"
 
+# `exact` for the same reason as /usr: an installer may place an .app under
+# /opt that `from_pkgutil` finds. Note this makes user-installed prefixes such
+# as /opt/homebrew stageable - the same category as an application bundle,
+# and still subject to the mount-point and package-ownership checks.
 [[deny]]
 path = "/opt"
 reason = "system prefix"
+exact = true
 
 [[deny]]
 path = "/proc"

@@ -619,17 +619,28 @@ fn uninstall(needle: &str, yes: bool, guesses: bool, threads: usize) -> std::io:
         return Ok(());
     }
 
-    // Stop the background jobs before anything moves, so a running helper
-    // cannot recreate what we just staged.
+    // Plan everything first. A refusal of the bundle itself is fatal, and
+    // finding that out after booting out the app's helpers would leave a
+    // stopped application that is still installed.
+    let prepared = storage_core::apps::prepare_uninstall(&plan, threads)?;
+    for (path, why) in &prepared.refused {
+        println!("  refused  {}  ({why})", path.display());
+    }
+
+    // Only now stop the background jobs, so a running helper cannot recreate
+    // what is about to move.
     for (label, why) in storage_core::apps::perform_unload(&plan) {
         println!("  {label}: {why}");
     }
 
-    let m = storage_core::apps::stage_uninstall(&plan, threads, &format!("uninstall {}", plan.app))?;
+    let planned = prepared.count();
+    let m = storage_core::apps::stage_prepared(&prepared, &format!("uninstall {}", plan.app))?;
     println!("\n  staged {} items, {} -> manifest {}", m.items.len(), human(m.total_bytes), m.id);
-    let skipped = plan.items.len() - m.items.len();
-    if skipped > 0 {
-        println!("  {skipped} skipped: changed between planning and staging");
+    // Only the gap between planning and moving is a TOCTOU skip. Anything the
+    // planner declined was already printed above with its real reason.
+    let changed = planned - m.items.len();
+    if changed > 0 {
+        println!("  {changed} skipped: changed between planning and staging");
     }
     println!("  undo with: sv restore {}", m.id);
     Ok(())

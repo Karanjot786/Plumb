@@ -967,18 +967,50 @@ pub fn perform_unload(_plan: &CleanupPlan) -> Vec<(String, String)> {
     Vec::new()
 }
 
-/// Turn the plan into one staging manifest, so one `restore` undoes the whole
-/// uninstall.
+/// A `CleanupPlan` run through `clean::plan`, before anything has moved.
 ///
-/// Every path goes through `clean::plan` and `clean::stage`, which is the only
-/// code allowed to move a user's files and the only path with an undo manifest
-/// behind it. Nothing here removes anything.
-pub fn stage_uninstall(
-    plan: &CleanupPlan,
-    threads: usize,
-    label: &str,
-) -> io::Result<crate::Manifest> {
+/// This exists so refusals are known *before* the first `launchctl bootout`.
+/// Booting out a helper and then discovering the bundle cannot be staged
+/// leaves the user with a stopped app that is still installed.
+pub struct Prepared {
+    inner: crate::Plan,
+    /// Paths `clean::plan` declined, with the reason it gave. Not fatal - the
+    /// uninstall proceeds with the rest - but always reported.
+    pub refused: Vec<(PathBuf, crate::Refusal)>,
+}
+
+impl Prepared {
+    pub fn count(&self) -> usize {
+        self.inner.staged.len()
+    }
+
+    pub fn bytes(&self) -> u64 {
+        self.inner.total_bytes
+    }
+
+    pub fn paths(&self) -> impl Iterator<Item = &Path> {
+        self.inner.staged.iter().map(|i| i.original.as_path())
+    }
+}
+
+/// Run every path in the plan through `clean::plan`. Moves nothing.
+///
+/// Fails outright when the `.app` bundle itself was refused, or when nothing
+/// at all survived. Both used to pass silently: the bundle's refusal was
+/// discarded, so the review sheet promised to remove the application, the
+/// leftovers moved, and the app stayed on disk with no error - and a plan
+/// that reduced to nothing still wrote an empty manifest that `list_staged`
+/// then hid.
+pub fn prepare_uninstall(plan: &CleanupPlan, threads: usize) -> io::Result<Prepared> {
+    let bundle: Option<PathBuf> = plan
+        .items
+        .iter()
+        .find(|r| r.item().category == Category::Bundle)
+        .map(|r| crate::blocklist::canon_keep_link(r.path()));
+
     let mut all: Option<crate::Plan> = None;
+    let mut refused: Vec<(PathBuf, crate::Refusal)> = Vec::new();
+
     for r in &plan.items {
         let root = crate::blocklist::canon_keep_link(r.path());
         // Scanning each item separately keeps the aggregate honest for a
@@ -987,6 +1019,7 @@ pub fn stage_uninstall(
         let private = crate::scan::private_sizes(&tree, &root);
         crate::aggregate::aggregate_with_private(&mut tree, &private);
         if tree.is_empty() {
+            refused.push((root, crate::Refusal::Missing));
             continue;
         }
         let one = crate::clean::plan(&tree, &root, &[0]);
@@ -995,8 +1028,42 @@ pub fn stage_uninstall(
             None => all = Some(one),
         }
     }
+
     let Some(all) = all else {
         return Err(io::Error::new(io::ErrorKind::NotFound, "nothing to stage"));
     };
-    crate::clean::stage(&all, label)
+    // `absorb` already folds each sub-plan's refusals forward.
+    refused.extend(all.refused.iter().cloned());
+
+    if let Some(b) = &bundle {
+        if let Some((path, why)) = refused.iter().find(|(p, _)| p == b) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "the application itself cannot be staged: {} ({why}); nothing was changed",
+                    path.display()
+                ),
+            ));
+        }
+    }
+    if all.staged.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "nothing survived planning; refusing to write an empty manifest",
+        ));
+    }
+    debug_assert!(
+        bundle.is_none() || all.staged.iter().any(|i| Some(&i.original) == bundle.as_ref()),
+        "the bundle was neither staged nor refused"
+    );
+    Ok(Prepared { inner: all, refused })
+}
+
+/// Move a prepared plan into staging, so one `restore` undoes the whole
+/// uninstall.
+///
+/// `clean::stage` is the only code allowed to move a user's files and the
+/// only path with an undo manifest behind it. Nothing here removes anything.
+pub fn stage_prepared(prepared: &Prepared, label: &str) -> io::Result<crate::Manifest> {
+    crate::clean::stage(&prepared.inner, label)
 }

@@ -856,6 +856,8 @@ struct UninstallOut {
     /// Helpers that would not stop. Reported, never fatal: one that was not
     /// running is the ordinary case.
     unload_problems: Vec<(String, String)>,
+    /// Paths the planner declined, with the reason it gave.
+    refused: Vec<(String, String)>,
 }
 
 /// Stop the app's background jobs, then route every path through staging.
@@ -873,15 +875,22 @@ fn app_uninstall(idx: usize, state: tauri::State<'_, App>) -> Result<UninstallOu
     if plan.is_empty() {
         return Err("nothing to stage".into());
     }
-    let unload_problems = apps::perform_unload(&plan);
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+    // Plan before unloading: a refused bundle must abort while the app is
+    // still running and still installed, not after its helpers are stopped.
+    let prepared = apps::prepare_uninstall(&plan, threads).map_err(|e| e.to_string())?;
+    let refused: Vec<(String, String)> =
+        prepared.refused.iter().map(|(p, w)| (p.display().to_string(), w.to_string())).collect();
+
+    let unload_problems = apps::perform_unload(&plan);
     let label = format!("uninstall {}", plan.app);
-    let m = apps::stage_uninstall(&plan, threads, &label).map_err(|e| e.to_string())?;
+    let m = apps::stage_prepared(&prepared, &label).map_err(|e| e.to_string())?;
     Ok(UninstallOut {
         manifest: m.id,
         count: m.items.len(),
         bytes: m.total_bytes,
         unload_problems,
+        refused,
     })
 }
 
