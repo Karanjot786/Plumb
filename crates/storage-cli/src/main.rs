@@ -59,6 +59,12 @@ enum SnapCmd {
     },
     /// List saved snapshots, newest first.
     List,
+    /// Compare two snapshots.
+    Diff {
+        old: PathBuf,
+        new: PathBuf,
+        #[arg(long, default_value_t = 40)] limit: usize,
+    },
 }
 
 fn human(b: u64) -> String {
@@ -317,6 +323,29 @@ fn main() -> std::io::Result<()> {
                         std::process::exit(1);
                     }
                 }
+            }
+            SnapCmd::Diff { old, new, limit } => {
+                let a = snapshot::Snapshot::open(old)?;
+                let b = snapshot::Snapshot::open(new)?;
+                let started = std::time::Instant::now();
+                let changes = storage_core::diff::diff(a.tree(), b.tree());
+                let took = started.elapsed();
+                if changes.is_empty() {
+                    println!("no changes ({} vs {} nodes)", a.len(), b.len());
+                    return Ok(());
+                }
+                let mut net: i128 = 0;
+                for c in changes.iter().take(*limit) {
+                    let d = c.delta();
+                    let sign = if d >= 0 { '+' } else { '-' };
+                    println!("{:<8} {sign}{:>10}  {}{}", c.kind.label(),
+                        human(d.unsigned_abs() as u64), c.path,
+                        if c.is_dir { "/" } else { "" });
+                }
+                for c in &changes { net += c.delta(); }
+                println!("\n  {} change(s) in {:?}", changes.len(), took);
+                let sign = if net >= 0 { '+' } else { '-' };
+                println!("  net {sign}{}", human(net.unsigned_abs() as u64));
             }
             SnapCmd::List => {
                 let list = snapshot::list()?;
