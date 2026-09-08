@@ -174,8 +174,8 @@ is what makes a folder's reclaimable number correct rather than merely plausible
 Snapshots are `rkyv` archives, mapped rather than parsed, so a diff of two scans opens
 instantly.
 
-The design document, the verified-facts research file and the adversarial audit are
-under [`docs/`](docs/).
+The design document, the verified-facts research file and the adversarial audit live in a
+separate private repository, `Plumb_docs`. They are not published with the code.
 
 ## Contributing
 

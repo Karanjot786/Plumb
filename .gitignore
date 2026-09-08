@@ -6,3 +6,6 @@ site/node_modules/
 site/.next/
 
 crates/*/gen/schemas/
+
+docs/
+site/

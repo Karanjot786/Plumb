@@ -69,7 +69,8 @@ cargo run -p plumb-cli -- scan "$F"      # freeable must be below logical
 
 Read `HANDOFF.md` before anything else. It records what is verified by having been run
 versus what merely compiles, which is a distinction this project takes seriously. The
-design document under `docs/superpowers/specs/` is §-numbered and is the reference for
+design document, kept in the separate private `Plumb_docs` repository, is §-numbered and
+is the reference for
 why things are the way they are.
 
 ## House style
