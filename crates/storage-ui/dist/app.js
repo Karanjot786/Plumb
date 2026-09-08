@@ -1033,6 +1033,7 @@ function paintEvents() {
     li.append(k, d, p);
     return li;
   }));
+  $("mon-empty").hidden = M.events.length > 0;
 }
 
 async function tick() {
@@ -1062,6 +1063,19 @@ function stopMonitor() {
   $("mon-start").textContent = "Start";
   $("mon-pause").disabled = true;
 }
+
+// The same plugin command the Storage tab's picker uses, so the page needs no
+// bundled JS binding. It also makes this panel reachable without typing, which
+// is what kept the monitor unverified.
+$("mon-pick").onclick = async () => {
+  const dir = await invoke("plugin:dialog|open", {
+    options: { directory: true, multiple: false, title: "Choose a folder to watch" },
+  });
+  const path = Array.isArray(dir) ? dir[0] : dir;
+  if (!path) return;
+  $("mon-path").value = typeof path === "string" ? path : path.path;
+  $("mon-start").click();
+};
 
 $("mon-start").onclick = async () => {
   if (M.timer) return stopMonitor();
