@@ -56,8 +56,8 @@ Windows application discovery is not written, so the tab does not appear there.
 **From source** — the path that works on every platform today:
 
 ```bash
-git clone https://github.com/Karanjot786/Visualize_Storage
-cd Visualize_Storage
+git clone https://github.com/Karanjot786/Plumb
+cd Plumb
 cargo install --path crates/plumb-cli    # installs `plumb`
 ```
 

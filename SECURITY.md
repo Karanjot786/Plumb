@@ -5,7 +5,7 @@
 **Do not open a public issue for a security problem.**
 
 Report it through GitHub's private vulnerability reporting:
-**[Security → Report a vulnerability](https://github.com/Karanjot786/Visualize_Storage/security/advisories/new)**.
+**[Security → Report a vulnerability](https://github.com/Karanjot786/Plumb/security/advisories/new)**.
 That channel is private between you and the maintainer until a fix ships. No email
 address is published here on purpose; the advisory form is the whole contact surface.
 
