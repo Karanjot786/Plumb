@@ -9,7 +9,9 @@ pub mod scan;
 pub mod volume;
 
 pub use aggregate::aggregate;
-pub use clean::{commit, list_staged, plan, restore, stage, Manifest, Plan, Refusal, StagedItem};
+pub use clean::{
+    commit, list_staged, plan, restore, stage, Manifest, Plan, Refusal, Removal, StagedItem,
+};
 pub use arena::{Flags, NodeId, Row, Tree, NO_PARENT};
 pub use rules::{quick_wins, Win};
 pub use scan::scan;

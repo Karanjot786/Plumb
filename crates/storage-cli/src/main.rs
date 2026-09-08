@@ -244,8 +244,14 @@ fn main() -> std::io::Result<()> {
             }
         }
         Cmd::Commit { id } => {
-            let freed = commit(*id)?;
-            println!("removed manifest {id}, {} freed", human(freed));
+            let r = commit(*id)?;
+            println!("manifest {id}: {} freed", human(r.freed));
+            for (path, why) in &r.skipped {
+                println!("  skipped  {}  ({why})", path.display());
+            }
+            if !r.skipped.is_empty() {
+                println!("  {} item(s) left staged; the manifest still lists them", r.skipped.len());
+            }
             println!("  entries sharing blocks with another path free less than their listed size");
         }
     }

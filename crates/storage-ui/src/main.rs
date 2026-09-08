@@ -540,9 +540,19 @@ fn cleanup_restore(id: u64) -> Result<usize, String> {
     clean::restore(id).map_err(|e| e.to_string())
 }
 
+#[derive(Serialize)]
+struct CommitOut {
+    freed: u64,
+    skipped: Vec<(String, String)>,
+}
+
 #[tauri::command]
-fn cleanup_commit(id: u64) -> Result<u64, String> {
-    clean::commit(id).map_err(|e| e.to_string())
+fn cleanup_commit(id: u64) -> Result<CommitOut, String> {
+    let r = clean::commit(id).map_err(|e| e.to_string())?;
+    Ok(CommitOut {
+        freed: r.freed,
+        skipped: r.skipped.iter().map(|(p, w)| (p.display().to_string(), w.clone())).collect(),
+    })
 }
 
 fn main() {

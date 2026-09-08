@@ -22,7 +22,7 @@ use crate::{NodeId, Tree};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const DEFAULT_TTL_DAYS: u64 = 30;
@@ -211,16 +211,42 @@ fn entry_exists(p: &Path) -> bool {
 /// Hard gate on every removal. Not a `debug_assert`: this is the check that
 /// stands between a bug in path handling and someone's home directory.
 fn assert_in_staging(p: &Path) -> io::Result<()> {
-    let home_staging = central()?.join("staging");
-    let under_home = p.starts_with(&home_staging);
-    let under_volume = p.components().any(|c| c.as_os_str() == ".sv-staging");
-    if under_home || under_volume {
+    let deny = |why: &str| {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("refusing to touch {} : {why}", p.display()),
+        ))
+    };
+    if !p.is_absolute() {
+        return deny("not an absolute path");
+    }
+    // A `..` anywhere makes every prefix test below meaningless:
+    // `/Volumes/X/.sv-staging/../../../Users/me/Documents` contains the marker
+    // and still walks straight out of the staging area.
+    if p.components().any(|c| matches!(c, Component::ParentDir)) {
+        return deny("path contains a .. component");
+    }
+
+    let home = central()?.join("staging");
+    let home = home.canonicalize().unwrap_or(home);
+    if p.starts_with(&home) {
         return Ok(());
     }
-    Err(io::Error::new(
-        io::ErrorKind::PermissionDenied,
-        format!("refusing to touch {} : not inside a staging directory", p.display()),
-    ))
+
+    // Per-volume root. Rebuilt from the path itself, then required to be a real
+    // directory of that exact name sitting on a mount point, which is the only
+    // place `staging_root_for` ever creates one.
+    let mut acc = PathBuf::new();
+    for c in p.components() {
+        acc.push(c);
+        if c.as_os_str() == ".sv-staging" {
+            let ok = acc.is_dir()
+                && acc.parent().map(blocklist::is_mount_point).unwrap_or(false)
+                && p.starts_with(&acc);
+            return if ok { Ok(()) } else { deny("not a staging directory on a mount point") };
+        }
+    }
+    deny("not inside a staging directory")
 }
 
 // -------------------------------------------------------------------- plan
@@ -461,39 +487,74 @@ pub fn restore(id: u64) -> io::Result<usize> {
 
 // ------------------------------------------------------------------ commit
 
+/// What a commit actually did. `skipped` is never empty silently: an item this
+/// function declined to remove is an item the user still has, and they are told.
+#[derive(Debug, Default)]
+pub struct Removal {
+    pub freed: u64,
+    pub skipped: Vec<(PathBuf, String)>,
+}
+
 /// Permanent removal. The only function in the project that deletes anything,
 /// and it refuses any path not inside a staging directory.
-pub fn commit(id: u64) -> io::Result<u64> {
-    let m = read_manifest(id)?;
-    let mut freed = 0u64;
+pub fn commit(id: u64) -> io::Result<Removal> {
+    let mut m = read_manifest(id)?;
+    let mut out = Removal::default();
+    let mut left: Vec<StagedItem> = Vec::new();
 
     for item in &m.items {
-        if assert_in_staging(&item.staged).is_err() {
+        if let Err(e) = assert_in_staging(&item.staged) {
+            out.skipped.push((item.staged.clone(), e.to_string()));
+            left.push(item.clone());
             continue;
         }
-        let Ok(meta) = fs::symlink_metadata(&item.staged) else { continue };
-        let ok = if meta.is_dir() && !meta.file_type().is_symlink() {
-            fs::remove_dir_all(&item.staged).is_ok()
-        } else {
-            fs::remove_file(&item.staged).is_ok()
+        let meta = match fs::symlink_metadata(&item.staged) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                // Already gone. Nothing to free, nothing to keep listed.
+                continue;
+            }
+            Err(e) => {
+                out.skipped.push((item.staged.clone(), e.to_string()));
+                left.push(item.clone());
+                continue;
+            }
         };
-        if ok {
-            freed += item.bytes;
-        }
-    }
-
-    // Manifest and its now-empty payload directory go last, so a failure
-    // partway through still leaves a manifest describing what remains.
-    let manifest_path = manifests_dir()?.join(format!("{id}.json"));
-    if manifest_path.exists() {
-        fs::remove_file(&manifest_path)?;
-    }
-    for item in &m.items {
-        if let Some(parent) = item.staged.parent() {
-            if assert_in_staging(parent).is_ok() {
-                let _ = fs::remove_dir(parent);
+        let res = if meta.is_dir() && !meta.file_type().is_symlink() {
+            fs::remove_dir_all(&item.staged)
+        } else {
+            fs::remove_file(&item.staged)
+        };
+        match res {
+            Ok(()) => out.freed += item.bytes,
+            Err(e) => {
+                out.skipped.push((item.staged.clone(), e.to_string()));
+                left.push(item.clone());
             }
         }
     }
-    Ok(freed)
+
+    let manifest_path = manifests_dir()?.join(format!("{id}.json"));
+    if left.is_empty() {
+        // Everything went. Manifest and its now-empty payload directory last,
+        // so a failure partway through still leaves a manifest describing what
+        // remains.
+        if manifest_path.exists() {
+            fs::remove_file(&manifest_path)?;
+        }
+        for item in &m.items {
+            if let Some(parent) = item.staged.parent() {
+                if assert_in_staging(parent).is_ok() {
+                    let _ = fs::remove_dir(parent);
+                }
+            }
+        }
+    } else {
+        // Keep the survivors addressable. Dropping the manifest here would
+        // orphan the very files we just failed to remove.
+        m.total_bytes = left.iter().map(|i| i.bytes).sum();
+        m.items = left;
+        write_manifest(&m)?;
+    }
+    Ok(out)
 }
