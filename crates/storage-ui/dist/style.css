@@ -142,3 +142,30 @@ button.wide { width: 100%; margin-top: 8px; }
 #pending button { padding: 2px 7px; font-size: 11px; }
 #pending .danger { color: #a8443a; }
 #add-cleanup { margin-top: 14px; }
+
+#snaps { list-style: none; margin: 8px 0 0; padding: 0; font-size: 12px; }
+#snaps li { display: flex; align-items: center; gap: 6px; padding: 3px 0; }
+#snaps input { margin: 0; }
+#snaps .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+button.danger { color: #a8443a; }
+
+#results {
+  position: absolute; inset: 0; background: var(--paper);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+#results-head {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--card);
+}
+#results-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
+#results-list li { padding: 6px 14px; border-bottom: 1px solid var(--line); font-size: 12px; }
+#results-list .row2 { display: flex; justify-content: space-between; gap: 10px; }
+#results-list .p { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#results-list .plus  { color: #7a8f5a; font-weight: 600; }
+#results-list .minus { color: #a8443a; font-weight: 600; }
+#results-list .tag {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--muted); margin-right: 6px;
+}
+#results-list .member { color: var(--muted); padding-left: 12px; font-size: 11px; }
+#results-list .shared { color: #a8734a; }

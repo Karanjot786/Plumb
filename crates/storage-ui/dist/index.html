@@ -59,6 +59,24 @@
       <ul id="pending"></ul>
     </section>
 
+    <section id="snap-card" hidden>
+      <h2>Snapshots</h2>
+      <button id="snap-save" class="wide">Save snapshot</button>
+      <ul id="snaps"></ul>
+      <p class="muted tiny">Pick two to compare.</p>
+    </section>
+
+    <section id="dupe-card" hidden>
+      <h2>Duplicates</h2>
+      <button id="dupe-find" class="wide">Find duplicates</button>
+      <p id="dupe-total" class="muted"></p>
+      <div class="row" id="dupe-actions" hidden>
+        <button id="dupe-dry">Dry run</button>
+        <button id="dupe-go" class="danger">Dedupe</button>
+      </div>
+      <p id="dupe-note" class="muted tiny"></p>
+    </section>
+
     <section id="types-card" hidden>
       <h2>File types</h2>
       <div id="typebar"></div>
@@ -106,6 +124,13 @@
       <canvas id="image"></canvas>
       <canvas id="overlay"></canvas>
       <div id="empty">No scan yet.</div>
+      <div id="results" hidden>
+        <div id="results-head">
+          <strong id="results-title"></strong>
+          <button id="results-close">Back to views</button>
+        </div>
+        <ul id="results-list"></ul>
+      </div>
     </div>
   </section>
 

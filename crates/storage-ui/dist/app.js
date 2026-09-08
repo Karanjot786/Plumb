@@ -108,6 +108,12 @@ async function startScan(path) {
     S.node = 0;
     tray.clear();
     paintTray();
+    $("results").hidden = true;
+    $("dupe-card").hidden = false;
+    $("dupe-total").textContent = "";
+    $("dupe-actions").hidden = true;
+    $("dupe-note").textContent = "";
+    paintSnaps();
     $("path").value = path;
     applyOverview(ov);
     await crumbs();
@@ -432,6 +438,12 @@ $("stage-btn").onclick = async () => {
     const r = await invoke("cleanup_stage", { ids: [...tray.keys()], label: "cleanup" });
     tray.clear();
     paintTray();
+    $("results").hidden = true;
+    $("dupe-card").hidden = false;
+    $("dupe-total").textContent = "";
+    $("dupe-actions").hidden = true;
+    $("dupe-note").textContent = "";
+    paintSnaps();
     $("status").textContent =
       `staged ${r.moved} items, ${human(r.total_bytes)}` +
       (r.skipped ? ` (${r.skipped} changed, skipped)` : "");
@@ -475,6 +487,146 @@ async function paintPending() {
     return li;
   }));
 }
+
+// ---------------------------------------------------------------- stage 5
+
+function showResults(title, items) {
+  $("results-title").textContent = title;
+  $("results-list").replaceChildren(...items);
+  $("results").hidden = false;
+}
+$("results-close").onclick = () => { $("results").hidden = true; };
+
+// --- snapshots ------------------------------------------------------------
+
+$("snap-save").onclick = async () => {
+  $("snap-save").textContent = "saving...";
+  try {
+    await invoke("snapshot_save");
+    await paintSnaps();
+    $("status").textContent = "snapshot saved";
+  } catch (e) {
+    $("status").textContent = String(e);
+  }
+  $("snap-save").textContent = "Save snapshot";
+};
+
+async function paintSnaps() {
+  let list = [];
+  try { list = await invoke("snapshot_list"); } catch { return; }
+  $("snap-card").hidden = !S.scanned;
+  $("snaps").replaceChildren(...list.map((s) => {
+    const li = document.createElement("li");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.value = s.path;
+    cb.onchange = onSnapPick;
+    const nm = document.createElement("span");
+    nm.className = "nm";
+    nm.textContent = `${s.name} (${human(s.bytes)})`;
+    nm.title = s.path;
+    li.append(cb, nm);
+    return li;
+  }));
+}
+
+// Two ticked boxes means "compare these", oldest first.
+async function onSnapPick() {
+  const picked = [...$("snaps").querySelectorAll("input:checked")];
+  if (picked.length < 2) return;
+  const [a, b] = picked.slice(-2).map((c) => c.value);
+  picked.forEach((c) => { c.checked = false; });
+  let rows = [];
+  try {
+    rows = await invoke("snapshot_diff", { old: a, new: b });
+  } catch (e) {
+    $("status").textContent = String(e);
+    return;
+  }
+  if (!rows.length) {
+    showResults("No changes between those snapshots", []);
+    return;
+  }
+  let net = 0;
+  const items = rows.map((r) => {
+    net += r.delta;
+    const li = document.createElement("li");
+    const cls = r.delta >= 0 ? "plus" : "minus";
+    const sign = r.delta >= 0 ? "+" : "-";
+    li.innerHTML =
+      `<span class="row2"><span class="p"><span class="tag">${r.kind}</span>${r.path}${r.is_dir ? "/" : ""}</span>` +
+      `<span class="${cls}">${sign}${human(Math.abs(r.delta))}</span></span>`;
+    return li;
+  });
+  const sign = net >= 0 ? "+" : "-";
+  showResults(`${rows.length} change(s), net ${sign}${human(Math.abs(net))}`, items);
+}
+
+// --- duplicates -----------------------------------------------------------
+
+let dupeReady = false;
+
+$("dupe-find").onclick = async () => {
+  $("dupe-find").textContent = "scanning...";
+  try {
+    const d = await invoke("dupes_find", { minSize: 0 });
+    dupeReady = d.groups.length > 0;
+    $("dupe-total").textContent = d.groups.length
+      ? `${d.groups.length} group(s), ${human(d.total_reclaimable)} reclaimable`
+      : "no duplicates found";
+    // Hidden rather than broken where the mount cannot share extents.
+    $("dupe-actions").hidden = !(dupeReady && d.reflink_supported);
+    $("dupe-note").textContent = !dupeReady
+      ? ""
+      : d.reflink_supported
+        ? "Dedupe shares extents; both copies stay readable."
+        : "This volume cannot share extents, so dedupe is unavailable here.";
+
+    const items = [];
+    for (const g of d.groups) {
+      const head = document.createElement("li");
+      head.innerHTML =
+        `<span class="row2"><span class="p">${human(g.bytes_each)} each, ${g.members.length} names, ` +
+        `${g.copies} physical cop${g.copies === 1 ? "y" : "ies"}</span>` +
+        `<span class="${g.reclaimable ? "plus" : ""}">${human(g.reclaimable)} reclaimable</span></span>`;
+      items.push(head);
+      for (const m of g.members) {
+        const li = document.createElement("li");
+        li.className = "member";
+        li.innerHTML = `<span class="p">${m.shared ? '<span class="shared">[shares blocks]</span> ' : ""}${m.path}</span>`;
+        items.push(li);
+      }
+    }
+    showResults(`Duplicates — ${human(d.total_reclaimable)} reclaimable`, items);
+  } catch (e) {
+    $("dupe-total").textContent = String(e);
+  }
+  $("dupe-find").textContent = "Find duplicates";
+};
+
+async function runDedupe(dry) {
+  try {
+    const r = await invoke("dupes_dedupe", { minSize: 0, dryRun: dry });
+    const items = r.refused.map(([p, why]) => {
+      const li = document.createElement("li");
+      li.innerHTML = `<span class="row2"><span class="p"><span class="tag">refused</span>${p}</span><span>${why}</span></span>`;
+      return li;
+    });
+    showResults(
+      `${dry ? "Dry run" : "Deduped"}: ${r.done} file(s), ${human(r.freed)} ${dry ? "would be freed" : "freed"}`,
+      items,
+    );
+    if (!dry) await startScan($("path").value.trim());
+  } catch (e) {
+    $("dupe-total").textContent = String(e);
+  }
+}
+
+$("dupe-dry").onclick = () => runDedupe(true);
+$("dupe-go").onclick = () => {
+  if (!confirm("Replace duplicate copies with shared extents? Both files stay readable and byte-identical.")) return;
+  runDedupe(false);
+};
 
 // -------------------------------------------------------------- navigation
 
@@ -548,3 +700,4 @@ new ResizeObserver(() => {
 
 paintTabs();
 paintPending();
+paintSnaps();

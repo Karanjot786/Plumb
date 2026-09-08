@@ -555,6 +555,160 @@ fn cleanup_commit(id: u64) -> Result<CommitOut, String> {
     })
 }
 
+// ---------------------------------------------------------------- stage 5
+
+#[derive(Serialize)]
+struct SnapOut {
+    path: String,
+    name: String,
+    bytes: u64,
+    modified: u64,
+}
+
+#[tauri::command]
+fn snapshot_save(state: tauri::State<'_, App>) -> Result<SnapOut, String> {
+    let g = state.loaded.lock().unwrap();
+    let l = g.as_ref().ok_or("nothing scanned yet")?;
+    let stem = Path::new(&l.root_path)
+        .file_name()
+        .map(|s| s.to_string_lossy().replace(['/', ' '], "_"))
+        .unwrap_or_else(|| "root".into());
+    let out = storage_core::snapshot::snapshots_dir()
+        .map_err(|e| e.to_string())?
+        .join(format!("{stem}-{}.svsnap", clean::now_secs()));
+    storage_core::snapshot::save(&l.tree, &out).map_err(|e| e.to_string())?;
+    let m = std::fs::metadata(&out).map_err(|e| e.to_string())?;
+    Ok(SnapOut {
+        name: out.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+        path: out.display().to_string(),
+        bytes: m.len(),
+        modified: clean::now_secs(),
+    })
+}
+
+#[tauri::command]
+fn snapshot_list() -> Result<Vec<SnapOut>, String> {
+    Ok(storage_core::snapshot::list()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|e| SnapOut {
+            name: e.path.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+            path: e.path.display().to_string(),
+            bytes: e.bytes,
+            modified: e.modified,
+        })
+        .collect())
+}
+
+#[derive(Serialize)]
+struct DiffOut {
+    kind: &'static str,
+    path: String,
+    is_dir: bool,
+    old: u64,
+    new: u64,
+    delta: i64,
+}
+
+#[tauri::command]
+fn snapshot_diff(old: String, new: String) -> Result<Vec<DiffOut>, String> {
+    let a = storage_core::snapshot::Snapshot::open(Path::new(&old)).map_err(|e| e.to_string())?;
+    let b = storage_core::snapshot::Snapshot::open(Path::new(&new)).map_err(|e| e.to_string())?;
+    Ok(storage_core::diff::diff(a.tree(), b.tree())
+        .into_iter()
+        .take(500)
+        .map(|c| {
+            let delta = c.delta().clamp(i64::MIN as i128, i64::MAX as i128) as i64;
+            DiffOut { kind: c.kind.label(), path: c.path, is_dir: c.is_dir, old: c.old, new: c.new, delta }
+        })
+        .collect())
+}
+
+#[derive(Serialize)]
+struct DupeMemberOut {
+    path: String,
+    shared: bool,
+}
+
+#[derive(Serialize)]
+struct DupeGroupOut {
+    bytes_each: u64,
+    reclaimable: u64,
+    copies: usize,
+    members: Vec<DupeMemberOut>,
+}
+
+#[derive(Serialize)]
+struct DupesOut {
+    groups: Vec<DupeGroupOut>,
+    total_reclaimable: u64,
+    /// False when this mount cannot share extents, so the UI hides the action
+    /// rather than offering something that will fail.
+    reflink_supported: bool,
+}
+
+fn scan_dupes(l: &Loaded, min_size: u64) -> Vec<storage_core::dupes::Group> {
+    storage_core::dupes::find(&l.tree, Path::new(&l.root_path), min_size)
+}
+
+#[tauri::command]
+fn dupes_find(min_size: u64, state: tauri::State<'_, App>) -> Result<DupesOut, String> {
+    let g = state.loaded.lock().unwrap();
+    let l = g.as_ref().ok_or("nothing scanned yet")?;
+    let groups = scan_dupes(l, min_size);
+    Ok(DupesOut {
+        total_reclaimable: storage_core::dupes::total_reclaimable(&groups),
+        reflink_supported: storage_core::reflink::supported(Path::new(&l.root_path)),
+        groups: groups
+            .into_iter()
+            .take(200)
+            .map(|g| DupeGroupOut {
+                bytes_each: g.bytes_each,
+                reclaimable: g.reclaimable,
+                copies: g.copies,
+                members: g
+                    .members
+                    .into_iter()
+                    .map(|m| DupeMemberOut {
+                        path: m.path.display().to_string(),
+                        shared: m.shared,
+                    })
+                    .collect(),
+            })
+            .collect(),
+    })
+}
+
+#[derive(Serialize)]
+struct DedupeOut {
+    freed: u64,
+    done: usize,
+    refused: Vec<(String, String)>,
+    dry_run: bool,
+}
+
+/// Always reachable as a dry run; the UI calls it that way first.
+#[tauri::command]
+fn dupes_dedupe(
+    min_size: u64,
+    dry_run: bool,
+    state: tauri::State<'_, App>,
+) -> Result<DedupeOut, String> {
+    let g = state.loaded.lock().unwrap();
+    let l = g.as_ref().ok_or("nothing scanned yet")?;
+    if !storage_core::reflink::supported(Path::new(&l.root_path)) {
+        return Err("this mount does not support reflinks".into());
+    }
+    let groups = scan_dupes(l, min_size);
+    let r = storage_core::reflink::dedupe_groups(&groups, dry_run);
+    Ok(DedupeOut {
+        freed: r.freed,
+        done: r.done.len(),
+        refused: r.refused.iter().map(|f| (f.path.display().to_string(), f.why.clone())).collect(),
+        dry_run,
+    })
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -570,7 +724,12 @@ fn main() {
             cleanup_stage,
             cleanup_list,
             cleanup_restore,
-            cleanup_commit
+            cleanup_commit,
+            snapshot_save,
+            snapshot_list,
+            snapshot_diff,
+            dupes_find,
+            dupes_dedupe
         ])
         .run(tauri::generate_context!())
         .expect("failed to start window");
