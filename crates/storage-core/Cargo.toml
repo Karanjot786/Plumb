@@ -1,8 +1,14 @@
 [package]
 name = "storage-core"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Disk accounting engine: scans a tree and reports what deleting it would actually free, modelling hardlinks, clones, sparse files and snapshots."
 
 [dependencies]
 dua-core.workspace = true
