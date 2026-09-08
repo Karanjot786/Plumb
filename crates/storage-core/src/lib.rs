@@ -4,6 +4,7 @@ pub mod blocklist;
 pub mod clean;
 pub mod diff;
 pub mod dupes;
+pub mod reflink;
 pub mod layout;
 pub mod render;
 pub mod rules;

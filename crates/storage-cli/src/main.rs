@@ -48,6 +48,10 @@ enum Cmd {
         path: PathBuf,
         #[arg(long, default_value_t = 0)] min_size: u64,
         #[arg(long, default_value_t = 20)] limit: usize,
+        /// Share extents between identical copies instead of listing them.
+        #[arg(long)] dedupe: bool,
+        /// With --dedupe, run every check and change nothing.
+        #[arg(long)] dry_run: bool,
     },
     /// Save, list and compare snapshots of a scanned tree.
     Snapshot {
@@ -283,7 +287,7 @@ fn main() -> std::io::Result<()> {
             }
             println!("  entries sharing blocks with another path free less than their listed size");
         }
-        Cmd::Dupes { path, min_size, limit } => {
+        Cmd::Dupes { path, min_size, limit, dedupe, dry_run } => {
             let t = load(path, cli.threads)?;
             let root = storage_core::blocklist::canon_keep_link(path);
             let started = std::time::Instant::now();
@@ -306,6 +310,29 @@ fn main() -> std::io::Result<()> {
             let total = storage_core::dupes::total_reclaimable(&groups);
             println!("\n  {} group(s) in {:?}", groups.len(), took);
             println!("  {} reclaimable  (already-shared copies excluded)", human(total));
+
+            if !dedupe {
+                if storage_core::reflink::supported(&root) {
+                    println!("  this mount supports reflinks: sv dupes {} --dedupe --dry-run",
+                        path.display());
+                }
+                return Ok(());
+            }
+            if !storage_core::reflink::supported(&root) {
+                println!("\n  this mount does not support reflinks; nothing to do");
+                return Ok(());
+            }
+            let r = storage_core::reflink::dedupe_groups(&groups, *dry_run);
+            println!("\n{}", if *dry_run { "dry run, nothing changed:" } else { "deduped:" });
+            for d in &r.done {
+                println!("  {:>10}  {}\n              shares with {}",
+                    human(d.bytes), d.replaced.display(), d.kept.display());
+            }
+            for f in &r.refused {
+                println!("  refused    {}  ({})", f.path.display(), f.why);
+            }
+            println!("\n  {} file(s), {} {}", r.done.len(), human(r.freed),
+                if *dry_run { "would be freed" } else { "freed" });
         }
         Cmd::Snapshot { cmd } => match cmd {
             SnapCmd::Save { path, out } => {
