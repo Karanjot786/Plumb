@@ -1,0 +1,112 @@
+# Builds and *runs* the CLI on all three platforms.
+#
+# The point is not that it compiles. Every bug this project has had was found
+# by running it, so each job creates a fixture with a hardlink in it and checks
+# that the scanner reports what deleting it would actually free. Windows and
+# Linux have never executed this code on real hardware; that is what this is
+# for. storage-ui is skipped: it needs webkit2gtk, and the shell is not what
+# is unverified here.
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  run:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: build
+        run: cargo build -p storage-cli --locked
+
+      # A 50 MiB file, a hardlink to it, and a 10 MiB file. Logical size counts
+      # the link twice; freeable must not. That single assertion is the whole
+      # thesis of the project, so if it holds here the platform is sound.
+      - name: hardlink accounting (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          F="$RUNNER_TEMP/fix"; mkdir -p "$F/a" "$F/b"
+          dd if=/dev/zero of="$F/a/big.bin" bs=1048576 count=50 2>/dev/null
+          ln "$F/a/big.bin" "$F/b/hard.bin"
+          dd if=/dev/zero of="$F/a/solo.bin" bs=1048576 count=10 2>/dev/null
+          out=$(cargo run -q -p storage-cli -- scan "$F")
+          echo "$out"
+          echo "$out" | grep -q "shared" \
+            || { echo "FAIL: hardlink family not detected"; exit 1; }
+          log=$(echo "$out" | awk '/logical/   {print $2}')
+          fre=$(echo "$out" | awk '/freeable/  {print $2}')
+          echo "logical=$log freeable=$fre"
+          awk -v l="$log" -v f="$fre" 'BEGIN{ if (f+0 >= l+0) exit 1 }' \
+            || { echo "FAIL: freeable ($fre) should be below logical ($log)"; exit 1; }
+
+      - name: hardlink accounting (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $F = Join-Path $env:RUNNER_TEMP "fix"
+          New-Item -ItemType Directory -Force -Path "$F\a","$F\b" | Out-Null
+          $buf = New-Object byte[] (1MB)
+          $fs = [IO.File]::Create("$F\a\big.bin")
+          for ($i=0; $i -lt 50; $i++) { $fs.Write($buf,0,$buf.Length) }
+          $fs.Close()
+          New-Item -ItemType HardLink -Path "$F\b\hard.bin" -Target "$F\a\big.bin" | Out-Null
+          $fs = [IO.File]::Create("$F\a\solo.bin")
+          for ($i=0; $i -lt 10; $i++) { $fs.Write($buf,0,$buf.Length) }
+          $fs.Close()
+          $out = cargo run -q -p storage-cli -- scan "$F" | Out-String
+          Write-Host $out
+          if ($out -notmatch "shared") {
+            Write-Error "FAIL: hardlink family not detected on NTFS"
+          }
+          $log = [double](($out -split "`n" | Select-String "logical"  ) -split "\s+")[2]
+          $fre = [double](($out -split "`n" | Select-String "freeable" ) -split "\s+")[2]
+          Write-Host "logical=$log freeable=$fre"
+          if ($fre -ge $log) {
+            Write-Error "FAIL: freeable ($fre) should be below logical ($log)"
+          }
+
+      # Staging is the code that moves the user's files. Round-trip it.
+      - name: stage and restore (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          F="$RUNNER_TEMP/st"; mkdir -p "$F/junk"
+          dd if=/dev/zero of="$F/junk/x.bin" bs=1048576 count=12 2>/dev/null
+          cargo run -q -p storage-cli -- clean "$F/junk"
+          [ ! -e "$F/junk" ] || { echo "FAIL: staging left the source in place"; exit 1; }
+          id=$(cargo run -q -p storage-cli -- staged | grep -oE '[0-9]{6,}' | head -1)
+          cargo run -q -p storage-cli -- restore "$id"
+          [ -e "$F/junk/x.bin" ] || { echo "FAIL: restore did not put it back"; exit 1; }
+          echo "staging round-trip ok (manifest $id)"
+
+      - name: stage and restore (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $F = Join-Path $env:RUNNER_TEMP "st"
+          New-Item -ItemType Directory -Force -Path "$F\junk" | Out-Null
+          $buf = New-Object byte[] (1MB)
+          $fs = [IO.File]::Create("$F\junk\x.bin")
+          for ($i=0; $i -lt 12; $i++) { $fs.Write($buf,0,$buf.Length) }
+          $fs.Close()
+          cargo run -q -p storage-cli -- clean "$F\junk"
+          if (Test-Path "$F\junk") { Write-Error "FAIL: staging left the source in place" }
+          $id = (cargo run -q -p storage-cli -- staged | Select-String -Pattern '\d{6,}').Matches[0].Value
+          cargo run -q -p storage-cli -- restore $id
+          if (-not (Test-Path "$F\junk\x.bin")) { Write-Error "FAIL: restore did not put it back" }
+          Write-Host "staging round-trip ok (manifest $id)"
