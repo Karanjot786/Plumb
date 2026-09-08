@@ -128,6 +128,15 @@ pub fn scan(root: &Path, threads: usize, mut progress: impl FnMut(u64) + Send) -
         });
     }
 
+    // Canonical sibling order. A snapshot diff joins on tree position and
+    // breaks ties on the sibling ordinal, so the emit order has to be a pure
+    // function of the names rather than of how the walker happened to schedule
+    // its threads. Raw bytes, not a locale collation: the comparison must mean
+    // the same thing on every machine that reads the snapshot.
+    for kids in &mut children_of {
+        kids.sort_by(|&a, &b| raw[a].name.as_bytes().cmp(raw[b].name.as_bytes()));
+    }
+
     let mut tree = Tree::default();
     let Some(start) = root_raw else { return Ok(tree) };
 
@@ -165,5 +174,27 @@ pub fn scan(root: &Path, threads: usize, mut progress: impl FnMut(u64) + Send) -
         }
     }
     tree.check();
+    check_sibling_order(&tree);
     Ok(tree)
+}
+
+/// Siblings must be emitted in raw-name-byte order. `dua-cli` enforces the same
+/// invariant on read and refuses a snapshot that violates it; we assert it on
+/// write so a bad tree never reaches a snapshot in the first place.
+fn check_sibling_order(t: &Tree) {
+    #[cfg(debug_assertions)]
+    for i in 0..t.len() as NodeId {
+        let mut prev: Option<&str> = None;
+        for c in t.children(i) {
+            let name = t.name(c);
+            if let Some(p) = prev {
+                debug_assert!(
+                    p.as_bytes() <= name.as_bytes(),
+                    "siblings out of order under node {i}: {p:?} precedes {name:?}"
+                );
+            }
+            prev = Some(name);
+        }
+    }
+    let _ = t;
 }
