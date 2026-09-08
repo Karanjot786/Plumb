@@ -577,6 +577,20 @@ fn uninstall(needle: &str, yes: bool, guesses: bool, threads: usize) -> std::io:
         })
         .collect();
 
+    // An exact name or id wins outright. Substring alone left any application
+    // whose name or bundle id is a prefix of another's permanently
+    // unselectable - `sv uninstall Codex` listed Codex and ChatGPT and refused
+    // to act, with nothing the user could type to break the tie.
+    let exact: Vec<&apps::App> = picked
+        .iter()
+        .copied()
+        .filter(|a| {
+            a.name.to_lowercase() == n
+                || a.bundle_id.as_deref().unwrap_or("").to_lowercase() == n
+        })
+        .collect();
+    let picked = if exact.len() == 1 { exact } else { picked };
+
     match picked.len() {
         0 => {
             println!("no application matched {needle:?}");

@@ -231,15 +231,14 @@ pub fn is_system_path(p: &Path) -> bool {
 pub struct Removable(Associated);
 
 impl Removable {
-    /// `None` for anything that must never be staged. The system test is
-    /// re-derived from the path itself rather than trusting the `system_level`
-    /// flag, so a wrongly-built `Associated` cannot smuggle one through.
+    /// `None` for anything that must never be staged.
     ///
-    /// Unproven evidence is refused here rather than at the call site, so the
-    /// CLI cannot be more dangerous than the UI. `--guesses` widens what is
-    /// *shown*; it does not widen what moves.
+    /// Defined as the exact negation of `exclusion_reason`, so the gate and
+    /// the explanation the user reads can never disagree about one path. They
+    /// were two hand-maintained condition lists before, and `plan_from`'s
+    /// `debug_assert_eq!` on the counts was the only thing holding them level.
     pub fn new(a: &Associated) -> Option<Removable> {
-        if a.system_level || a.shared || !a.evidence.proven() || is_system_path(&a.path) {
+        if exclusion_reason(a).is_some() {
             return None;
         }
         Some(Removable(a.clone()))
@@ -267,10 +266,24 @@ pub fn stageable(items: &[Associated]) -> Vec<Removable> {
 /// Why a discovered item was kept out of the removable set. Shown so the user
 /// sees the whole footprint and understands what was left alone.
 pub fn exclusion_reason(a: &Associated) -> Option<&'static str> {
-    if a.system_level || is_system_path(&a.path) {
+    // Both spellings of the path are tested. `prepare_uninstall` canonicalizes
+    // with `canon_keep_link` before it stages, so judging only the string we
+    // were handed left a symlink into a system location passing this gate and
+    // relied on `blocklist::denied`'s inode match to catch it downstream. The
+    // type gate now does its own work.
+    if a.system_level
+        || is_system_path(&a.path)
+        || is_system_path(&crate::blocklist::canon_keep_link(&a.path))
+    {
         Some("system level - review only, not removable here")
     } else if a.shared {
         Some("another installed app claims this bundle id")
+    } else if a.category == Category::Bundle && is_symlink(&a.path) {
+        // `dir_bytes` already reports 0 for a symlink, which is the honest
+        // byte count - moving a link frees nothing. The lie was further on:
+        // the plan still announced an uninstall, moved the link, and left the
+        // application installed wherever it really lives.
+        Some("the bundle is a symlink - moving it would not uninstall the application")
     } else if !a.evidence.proven() {
         Some("name match only - a guess, not proof; remove by hand if you are sure")
     } else {
@@ -432,6 +445,11 @@ pub fn contesting_ids(apps: &[App], idx: usize) -> Vec<String> {
 
 /// Directory size by walking it directly. Used for bundles, which are small
 /// enough that a scan of the whole volume is not worth it.
+/// Whether the entry itself is a symlink, without following it.
+fn is_symlink(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).map(|m| m.file_type().is_symlink()).unwrap_or(false)
+}
+
 pub fn dir_bytes(path: &Path) -> u64 {
     let Ok(meta) = std::fs::symlink_metadata(path) else { return 0 };
     if meta.file_type().is_symlink() {
@@ -664,9 +682,16 @@ mod leftovers {
         let mut out = Vec::new();
         let mut seen: HashSet<PathBuf> = HashSet::new();
 
+        // `exists()` follows symlinks, so a dangling `/Applications/Foo.app`
+        // link read as "the app is gone" and labelled every leftover an
+        // orphan while the app was still in the list; a live link showed the
+        // bundle as 0 B. What matters is whether the entry is there at all,
+        // which is what `symlink_metadata` answers. Same test as `clean.rs`.
+        let bundle_present = std::fs::symlink_metadata(&app.path).is_ok();
+
         // The bundle itself is always ours, even when the id is contested:
         // two apps sharing an id still have two distinct `.app` directories.
-        if app.path.exists() {
+        if bundle_present {
             push(
                 &mut out,
                 &mut seen,
@@ -680,7 +705,7 @@ mod leftovers {
 
         let Some(home) = crate::blocklist::home() else { return out };
         let lib = home.join("Library");
-        let orphan = !app.path.exists();
+        let orphan = !bundle_present;
 
         if let Some(id) = &app.bundle_id {
             // Revalidate at the point of use. `list_apps` already filters, but
