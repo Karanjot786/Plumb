@@ -220,7 +220,11 @@ button.danger { color: #a8443a; }
 #app-detail li { display: flex; gap: 10px; padding: 4px 0; border-bottom: 1px solid var(--line); }
 #app-detail li .p { flex: 1; word-break: break-all; font-size: 11px; }
 #app-detail li .b { font-variant-numeric: tabular-nums; }
-#app-detail li .ev { display: block; color: var(--muted); font-size: 10px; }
+/* The review sheet reuses the detail pane's row markup, so the evidence line
+   has to break in both. Scoped to #app-detail alone, the sheet rendered
+   "/Applications/LibreOffice.appbundle id match" as one run of text. */
+#app-detail li .ev,
+#sheet-body li .ev { display: block; color: var(--muted); font-size: 10px; }
 /* System-level and sibling-shared items. Shown, never actionable. */
 #app-detail li.locked { opacity: .55; }
 #app-detail li.locked .p { text-decoration: none; }
