@@ -1,0 +1,130 @@
+# Builds downloadable artifacts on a version tag.
+#
+# ci.yml already proves all three platforms compile and run. This one packages
+# them. Two Mac runners rather than one universal binary, because macos-13 is
+# real Intel hardware and a cross-built x86_64 bundle has never been launched
+# on anything.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  create:
+    name: create the release
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: tag
+        run: echo "tag=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+      - name: create it if absent
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          T="${{ steps.tag.outputs.tag }}"
+          gh release view "$T" >/dev/null 2>&1 && exit 0
+          gh release create "$T" --title "Plumb $T" --notes "$(cat <<'NOTES'
+          Plumb reports the blocks you get back when you delete something, not the
+          size each file claims.
+
+          ### Downloads
+
+          - macOS, Apple Silicon: the `aarch64` dmg
+          - macOS, Intel: the `x64` dmg
+          - Linux, x86_64: the `amd64` deb
+          - Command line only, any of the three: the `plumb-*.tar.gz` for your platform
+
+          Binaries are unsigned. macOS blocks the first launch: right-click the app,
+          choose Open, then Open again in the dialog. For the CLI, run
+          `xattr -d com.apple.quarantine ./plumb`.
+
+          ### Read before using `clean`
+
+          Nothing gets deleted except by `plumb commit`. Two defects in the staging
+          gate are open and documented under Known issues in the README. Read that
+          section first.
+          NOTES
+          )"
+
+  build:
+    name: ${{ matrix.label }}
+    needs: create
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            label: macos-arm64
+          - os: macos-13
+            target: x86_64-apple-darwin
+            label: macos-x86_64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            label: linux-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.create.outputs.tag }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+
+      - name: linux gui dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf libsoup-3.0-dev
+
+      # The CLI first: it needs no bundler, so a failure in the GUI packaging
+      # still leaves a usable artifact.
+      - name: build the cli
+        run: cargo build --release --locked -p plumb-cli --target ${{ matrix.target }}
+
+      - name: package the cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          T="${{ needs.create.outputs.tag }}"
+          mkdir -p dist
+          tar czf "dist/plumb-${T}-${{ matrix.label }}.tar.gz" \
+            -C "target/${{ matrix.target }}/release" plumb
+          ls -la dist
+
+      - name: tauri-cli
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: build the app
+        working-directory: crates/plumb-ui
+        run: cargo tauri build --target ${{ matrix.target }}
+
+      - name: collect the bundles
+        shell: bash
+        run: |
+          set -euo pipefail
+          B="target/${{ matrix.target }}/release/bundle"
+          find "$B" -maxdepth 2 -type f \
+            \( -name '*.dmg' -o -name '*.deb' -o -name '*.AppImage' \) \
+            -exec cp {} dist/ \;
+          ls -la dist
+
+      - name: upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: gh release upload "${{ needs.create.outputs.tag }}" dist/* --clobber
