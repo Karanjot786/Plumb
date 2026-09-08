@@ -326,26 +326,31 @@ fn main() -> std::io::Result<()> {
                 println!("no applications found");
                 return Ok(());
             }
-            let contested = storage_core::apps::contested_ids(&apps);
             if *leftovers {
-                return show_leftovers(&apps, &contested, app.as_deref(), *guesses, *limit);
+                return show_leftovers(&apps, app.as_deref(), *guesses, *limit);
             }
-            let mut sized: Vec<(u64, &storage_core::apps::App)> = apps
+            let mut sized: Vec<(u64, usize, &storage_core::apps::App)> = apps
                 .iter()
-                .map(|a| (storage_core::apps::dir_bytes(&a.path), a))
+                .enumerate()
+                .map(|(i, a)| (storage_core::apps::dir_bytes(&a.path), i, a))
                 .collect();
-            sized.sort_by_key(|(b, _)| std::cmp::Reverse(*b));
-            for (bytes, a) in sized.iter().take(*limit) {
+            sized.sort_by_key(|(b, _, _)| std::cmp::Reverse(*b));
+            let mut contested = 0usize;
+            for (bytes, i, a) in sized.iter().take(*limit) {
                 let id = a.bundle_id.as_deref().unwrap_or("(no bundle id)");
-                let shared = if contested.contains(&id.to_string()) { "  [id shared]" } else { "" };
+                let with = storage_core::apps::contesting_ids(&apps, *i);
+                let shared = if with.is_empty() { "" } else { "  [id shared]" };
+                if !with.is_empty() {
+                    contested += 1;
+                }
                 println!("{:>10}  {:<34} {}{}", human(*bytes), a.name, id, shared);
                 if let Some(v) = &a.version {
                     println!("            v{v}  {}", a.path.display());
                 }
             }
             println!("\n  {} application(s)", apps.len());
-            if !contested.is_empty() {
-                println!("  {} bundle id(s) claimed by more than one app", contested.len());
+            if contested > 0 {
+                println!("  {contested} shown application(s) share a bundle id with another");
             }
         }
         Cmd::Watch { path, seconds, tick, poll, every } => {
@@ -495,7 +500,6 @@ fn main() -> std::io::Result<()> {
 /// prints and nothing else.
 fn show_leftovers(
     apps: &[storage_core::apps::App],
-    contested: &[String],
     filter: Option<&str>,
     guesses: bool,
     limit: usize,
@@ -503,9 +507,12 @@ fn show_leftovers(
     use storage_core::apps::{self, LeftoverOpts};
 
     let needle = filter.map(|f| f.to_lowercase());
-    let picked: Vec<&apps::App> = apps
+    // Carry the slot: the sibling guard excludes an app by position, not by
+    // id value, so two apps declaring the same id still guard each other.
+    let picked: Vec<(usize, &apps::App)> = apps
         .iter()
-        .filter(|a| match &needle {
+        .enumerate()
+        .filter(|(_, a)| match &needle {
             None => true,
             Some(n) => {
                 a.name.to_lowercase().contains(n)
@@ -520,8 +527,9 @@ fn show_leftovers(
     }
 
     let opts = LeftoverOpts { include_name_matches: guesses };
-    for a in picked.iter().take(limit) {
-        let items = apps::associated_for(a, contested, opts);
+    for (i, a) in picked.iter().take(limit) {
+        let others = apps::other_ids(apps, *i);
+        let items = apps::associated_for(a, &others, opts);
         let removable = apps::stageable(&items);
         let id = a.bundle_id.as_deref().unwrap_or("(no bundle id)");
         let total: u64 = items.iter().map(|i| i.bytes).sum();
@@ -529,8 +537,9 @@ fn show_leftovers(
 
         println!("\n{}  [{}]", a.name, id);
         println!("  {} in {} item(s); {} removable here", human(total), items.len(), human(free));
-        if contested.iter().any(|c| Some(c.as_str()) == a.bundle_id.as_deref()) {
-            println!("  sibling guard: another installed app claims this id");
+        let with = apps::contesting_ids(apps, *i);
+        if !with.is_empty() {
+            println!("  sibling guard: also claimed by {}", with.join(", "));
         }
         for i in &items {
             let why = apps::exclusion_reason(i);

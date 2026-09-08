@@ -28,7 +28,6 @@ struct Loaded {
 #[derive(Default)]
 struct AppsCache {
     apps: Vec<storage_core::apps::App>,
-    contested: Vec<String>,
     found: Vec<Vec<storage_core::apps::Associated>>,
 }
 
@@ -767,7 +766,7 @@ fn app_out(
     idx: usize,
     a: &storage_core::apps::App,
     found: &[storage_core::apps::Associated],
-    contested: &[String],
+    contested: bool,
 ) -> AppOut {
     let bundle_bytes = found
         .iter()
@@ -789,7 +788,7 @@ fn app_out(
         bundle_bytes,
         support_bytes,
         leftovers: found.iter().filter(|i| i.category != storage_core::apps::Category::Bundle).count(),
-        contested: a.bundle_id.as_ref().is_some_and(|id| contested.iter().any(|c| c == id)),
+        contested,
     }
 }
 
@@ -797,17 +796,21 @@ fn app_out(
 fn apps_list(guesses: bool, state: tauri::State<'_, App>) -> Result<Vec<AppOut>, String> {
     use storage_core::apps::{self, LeftoverOpts};
     let apps = apps::list_apps().map_err(|e| e.to_string())?;
-    let contested = apps::contested_ids(&apps);
     let opts = LeftoverOpts { include_name_matches: guesses };
-    let found: Vec<Vec<apps::Associated>> =
-        apps.iter().map(|a| apps::associated_for(a, &contested, opts)).collect();
+    // The sibling guard excludes an app by slot, so every app gets its own
+    // "everybody else" list rather than one shared contested set.
+    let found: Vec<Vec<apps::Associated>> = apps
+        .iter()
+        .enumerate()
+        .map(|(i, a)| apps::associated_for(a, &apps::other_ids(&apps, i), opts))
+        .collect();
 
     let out = apps
         .iter()
         .enumerate()
-        .map(|(i, a)| app_out(i, a, &found[i], &contested))
+        .map(|(i, a)| app_out(i, a, &found[i], !apps::contesting_ids(&apps, i).is_empty()))
         .collect();
-    *state.apps.lock().unwrap() = AppsCache { apps, contested, found };
+    *state.apps.lock().unwrap() = AppsCache { apps, found };
     Ok(out)
 }
 
@@ -834,9 +837,10 @@ fn app_detail(idx: usize, state: tauri::State<'_, App>) -> Result<AppDetail, Str
         .collect();
 
     // The plan is built here only to report what it would do. It moves nothing.
-    let plan = apps::uninstall_plan(a, &cache.contested, Default::default());
+    let others = apps::other_ids(&cache.apps, idx);
+    let plan = apps::uninstall_plan(a, &others, Default::default());
     Ok(AppDetail {
-        app: app_out(idx, a, found, &cache.contested),
+        app: app_out(idx, a, found, !apps::contesting_ids(&cache.apps, idx).is_empty()),
         items,
         unload: plan.unload.iter().map(|u| u.label()).collect(),
         stage_bytes: plan.bytes,
@@ -864,7 +868,7 @@ fn app_uninstall(idx: usize, state: tauri::State<'_, App>) -> Result<UninstallOu
     let plan = {
         let cache = state.apps.lock().unwrap();
         let a = cache.apps.get(idx).ok_or("no such application")?;
-        apps::uninstall_plan(a, &cache.contested, Default::default())
+        apps::uninstall_plan(a, &apps::other_ids(&cache.apps, idx), Default::default())
     };
     if plan.is_empty() {
         return Err("nothing to stage".into());

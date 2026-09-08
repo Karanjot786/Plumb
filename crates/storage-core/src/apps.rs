@@ -31,7 +31,6 @@
 //! an idea; none was consulted.
 
 use crate::{NodeId, Tree};
-use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -139,21 +138,43 @@ pub trait AppProvider {
 // ------------------------------------------------------------- validation
 
 /// Reverse-DNS, nothing else. Rejects separators, `..`, glob metacharacters,
-/// and anything that is not two or more dot-separated alphanumeric segments.
+/// and anything that is not three or more dot-separated alphanumeric segments.
 ///
 /// This runs before the id is interpolated into any path, which is the whole
 /// point: a hostile or corrupt `Info.plist` cannot traverse or widen a match.
+///
+/// **Three segments, not two.** A two-segment id is a vendor namespace rather
+/// than an application - `com.google`, `com.adobe`, `com.apple` - and because
+/// matching is descendant-inclusive by design, accepting one would sweep an
+/// entire vendor's data out of `~/Library`. `$HOME/Library` is not on the
+/// blocklist, so nothing downstream would catch it. The cost is that a
+/// genuinely two-segment id loses leftover detection; that is the safe
+/// direction, since the app bundle still stages and only the guessing stops.
 pub fn valid_bundle_id(id: &str) -> bool {
     if id.is_empty() || id.len() > 255 {
         return false;
     }
     let segments: Vec<&str> = id.split('.').collect();
-    if segments.len() < 2 {
+    if segments.len() < 3 {
         return false;
     }
     segments.iter().all(|s| {
         !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     })
+}
+
+/// Whether an id may be used to key a filesystem match.
+///
+/// Stricter than `valid_bundle_id`: Apple's namespace is refused outright, the
+/// way `usable_as_name_key` already refuses it for names. Any app can declare
+/// `CFBundleIdentifier = com.apple.Safari`, and descendant matching would then
+/// hand it Safari's containers, caches and preferences.
+pub fn usable_as_id_key(id: &str) -> bool {
+    if !valid_bundle_id(id) {
+        return false;
+    }
+    let lower = id.to_ascii_lowercase();
+    lower != "com.apple" && !lower.starts_with("com.apple.")
 }
 
 /// Boundary-anchored containment: `name` is `id`, or `id` followed by a dot.
@@ -370,21 +391,36 @@ pub fn list_apps() -> io::Result<Vec<App>> {
     Ok(Vec::new())
 }
 
-/// Bundle ids claimed by more than one installed app.
+/// Every *other* installed app's bundle id, excluding the one at `idx`.
 ///
-/// The sibling guard: `Xcode.app` and `Xcode-beta.app` share an id, and their
-/// support directories are shared too. When an id is contested only the `.app`
-/// itself may be removed.
-pub fn contested_ids(apps: &[App]) -> Vec<String> {
-    let mut count: HashMap<&str, usize> = HashMap::new();
-    for a in apps {
-        if let Some(id) = &a.bundle_id {
-            *count.entry(id.as_str()).or_default() += 1;
-        }
-    }
-    let mut v: Vec<String> =
-        count.into_iter().filter(|(_, n)| *n > 1).map(|(id, _)| id.to_string()).collect();
+/// Excluding by slot rather than by value matters: two apps can declare the
+/// same id, and that second app is exactly the sibling the guard exists for.
+pub fn other_ids(apps: &[App], idx: usize) -> Vec<String> {
+    apps.iter()
+        .enumerate()
+        .filter(|(i, _)| *i != idx)
+        .filter_map(|(_, a)| a.bundle_id.clone())
+        .collect()
+}
+
+/// Installed ids that boundary-match this app's own id in either direction.
+///
+/// The sibling guard, and it must be boundary-aware rather than exact.
+/// `id_matches` deliberately claims descendants, so `com.google.Chrome` also
+/// matches Chrome Canary's `com.google.Chrome.canary` files - but an exact
+/// equality test never notices the two apps are related, and Chrome's
+/// uninstall would carry Canary's profile away with it while Canary is still
+/// installed. Matching in *either* direction catches both orderings.
+pub fn contesting_ids(apps: &[App], idx: usize) -> Vec<String> {
+    let Some(id) = apps.get(idx).and_then(|a| a.bundle_id.as_deref()) else {
+        return Vec::new();
+    };
+    let mut v: Vec<String> = other_ids(apps, idx)
+        .into_iter()
+        .filter(|o| id_matches(o, id) || id_matches(id, o))
+        .collect();
     v.sort();
+    v.dedup();
     v
 }
 
@@ -559,15 +595,33 @@ mod leftovers {
         out.push(Associated { path, bytes, category, evidence, system_level, shared });
     }
 
+    /// Whether some *other* installed app also claims this entry.
+    ///
+    /// Sharing is a property of the entry, not of the app: `com.google.Chrome`
+    /// matches both `~/Library/Caches/com.google.Chrome` and
+    /// `~/Library/Caches/com.google.Chrome.canary`, and only the second one
+    /// belongs to somebody else.
+    ///
+    /// An id less specific than ours is not a competing claim. Uninstalling
+    /// Canary must still be able to take Canary's own files even though
+    /// Chrome's `com.google.Chrome` boundary-matches their names; Chrome is an
+    /// ancestor claim, and the most specific installed id owns the entry.
+    /// Anything as specific as ours, or more, does make it shared.
+    fn claimed_by_other(name: &str, id: &str, others: &[String], group: bool) -> bool {
+        others.iter().any(|o| {
+            entry_matches(name, o, group) && !(o != id && id_matches(id, o))
+        })
+    }
+
     /// Every path a scan of `dir` attributes to `id`.
     fn sweep(
         dir: &Path,
         id: &str,
+        others: &[String],
         category: Category,
         group: bool,
         orphan: bool,
         system_level: bool,
-        shared: bool,
         out: &mut Vec<Associated>,
         seen: &mut HashSet<PathBuf>,
     ) {
@@ -576,9 +630,12 @@ mod leftovers {
             let name = e.file_name().to_string_lossy().into_owned();
             let by_name = entry_matches(&name, id, group);
             // A container may be named something else and still declare the id.
-            let by_meta = !by_name
-                && category == Category::Containers
-                && container_declares(&e.path()).as_deref() == Some(id);
+            let declared = if by_name || category != Category::Containers {
+                None
+            } else {
+                container_declares(&e.path())
+            };
+            let by_meta = declared.as_deref() == Some(id);
             if !by_name && !by_meta {
                 continue;
             }
@@ -589,11 +646,15 @@ mod leftovers {
             } else {
                 Evidence::ExactBundleIdMatch
             };
+            // A container that declares an id is claimed through that id, not
+            // through its directory name.
+            let key = if by_meta { id } else { name.as_str() };
+            let shared = claimed_by_other(key, id, others, group && !by_meta);
             push(out, seen, e.path(), category, evidence, system_level, shared);
         }
     }
 
-    pub fn find(app: &App, contested: &[String], opts: LeftoverOpts) -> Vec<Associated> {
+    pub fn find(app: &App, others: &[String], opts: LeftoverOpts) -> Vec<Associated> {
         let mut out = Vec::new();
         let mut seen: HashSet<PathBuf> = HashSet::new();
 
@@ -618,25 +679,24 @@ mod leftovers {
         if let Some(id) = &app.bundle_id {
             // Revalidate at the point of use. `list_apps` already filters, but
             // an `App` can be built by a caller, and this is the last line
-            // before the id is interpolated into a path.
-            if !valid_bundle_id(id) {
+            // before the id is interpolated into a path. `usable_as_id_key`
+            // also refuses Apple's namespace and any two-segment vendor id.
+            if !usable_as_id_key(id) {
                 return out;
             }
             debug_assert!(!id.contains('/') && !id.contains('*') && !id.contains(".."));
-
-            // Shared data stays displayed and stays un-stageable.
-            let shared = contested.iter().any(|c| c == id);
+            debug_assert!(id.split('.').count() >= 3, "vendor namespace reached a sweep");
 
             for (sub, cat) in ID_DIRS {
                 let group = cat == Category::GroupContainers;
                 sweep(
                     &lib.join(sub),
                     id,
+                    others,
                     cat,
                     group,
                     orphan,
                     false,
-                    shared,
                     &mut out,
                     &mut seen,
                 );
@@ -645,11 +705,11 @@ mod leftovers {
                 sweep(
                     Path::new(sys),
                     id,
+                    others,
                     Category::SystemLevel,
                     false,
                     orphan,
                     true,
-                    shared,
                     &mut out,
                     &mut seen,
                 );
@@ -659,10 +719,12 @@ mod leftovers {
         // Name-keyed. The weakest rule by far, so it is off unless asked for,
         // guarded by `usable_as_name_key`, and never marked proven.
         if opts.include_name_matches && usable_as_name_key(&app.name) {
+            // A name-keyed hit is not keyed on an id at all, so the best we
+            // can say is whether anybody else claims this app's id.
             let shared = app
                 .bundle_id
                 .as_ref()
-                .map(|id| contested.iter().any(|c| c == id))
+                .map(|id| others.iter().any(|o| id_matches(o, id) || id_matches(id, o)))
                 .unwrap_or(false);
             let want = app.name.trim().to_ascii_lowercase();
             for (sub, cat) in NAME_DIRS {
@@ -693,16 +755,18 @@ mod leftovers {
 
 /// Every file and directory we can attribute to `app`.
 ///
-/// `contested` is the output of `contested_ids` over all installed apps: pass
-/// it so the sibling guard can fire. An empty slice disables the guard, which
-/// is only ever correct when there is genuinely one app.
+/// `others` is `other_ids` over the installed set - every other app's bundle
+/// id. Each matched entry is marked `shared` when one of those also claims it,
+/// which is what keeps an uninstall of `com.google.Chrome` from carrying away
+/// `com.google.Chrome.canary`'s profile. An empty slice disables the guard,
+/// which is only ever correct when there is genuinely one app.
 #[cfg(target_os = "macos")]
-pub fn associated_for(app: &App, contested: &[String], opts: LeftoverOpts) -> Vec<Associated> {
-    leftovers::find(app, contested, opts)
+pub fn associated_for(app: &App, others: &[String], opts: LeftoverOpts) -> Vec<Associated> {
+    leftovers::find(app, others, opts)
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn associated_for(_app: &App, _contested: &[String], _opts: LeftoverOpts) -> Vec<Associated> {
+pub fn associated_for(_app: &App, _others: &[String], _opts: LeftoverOpts) -> Vec<Associated> {
     Vec::new()
 }
 
@@ -711,19 +775,33 @@ pub fn associated_for(_app: &App, _contested: &[String], _opts: LeftoverOpts) ->
 /// re-enumerating every application.
 pub struct Local {
     apps: Vec<App>,
-    contested: Vec<String>,
     pub opts: LeftoverOpts,
 }
 
 impl Local {
     pub fn new() -> io::Result<Local> {
-        let apps = list_apps()?;
-        let contested = contested_ids(&apps);
-        Ok(Local { apps, contested, opts: LeftoverOpts::default() })
+        Ok(Local { apps: list_apps()?, opts: LeftoverOpts::default() })
     }
 
-    pub fn contested(&self) -> &[String] {
-        &self.contested
+    /// The slot an app occupies, so the sibling guard can exclude it by
+    /// position rather than by id value.
+    pub fn index_of(&self, app: &App) -> Option<usize> {
+        self.apps.iter().position(|a| a.path == app.path)
+    }
+
+    pub fn others_for(&self, app: &App) -> Vec<String> {
+        match self.index_of(app) {
+            Some(i) => other_ids(&self.apps, i),
+            // Unknown app: every installed id is somebody else's.
+            None => self.apps.iter().filter_map(|a| a.bundle_id.clone()).collect(),
+        }
+    }
+
+    pub fn contesting_for(&self, app: &App) -> Vec<String> {
+        match self.index_of(app) {
+            Some(i) => contesting_ids(&self.apps, i),
+            None => Vec::new(),
+        }
     }
 }
 
@@ -733,11 +811,11 @@ impl AppProvider for Local {
     }
 
     fn associated(&self, app: &App) -> io::Result<Vec<Associated>> {
-        Ok(associated_for(app, &self.contested, self.opts))
+        Ok(associated_for(app, &self.others_for(app), self.opts))
     }
 
     fn uninstall_plan(&self, app: &App) -> io::Result<CleanupPlan> {
-        Ok(uninstall_plan(app, &self.contested, self.opts))
+        Ok(uninstall_plan(app, &self.others_for(app), self.opts))
     }
 }
 
@@ -816,8 +894,10 @@ fn login_items(_bundle: &Path) -> Vec<String> {
 }
 
 /// Build the plan. Touches nothing.
-pub fn uninstall_plan(app: &App, contested: &[String], opts: LeftoverOpts) -> CleanupPlan {
-    let found = associated_for(app, contested, opts);
+///
+/// `others` is `other_ids` over the installed set; see `associated_for`.
+pub fn uninstall_plan(app: &App, others: &[String], opts: LeftoverOpts) -> CleanupPlan {
+    let found = associated_for(app, others, opts);
     let items = stageable(&found);
     let excluded: Vec<(PathBuf, &'static str)> = found
         .iter()
