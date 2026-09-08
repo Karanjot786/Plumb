@@ -19,6 +19,25 @@ fn lca(t: &Tree, depth: &[u32], mut a: NodeId, mut b: NodeId) -> NodeId {
 }
 
 pub fn aggregate(t: &mut Tree) {
+    aggregate_with_private(t, &[])
+}
+
+/// `private[i]` is `ATTR_CMNEXT_PRIVATESIZE` for node `i` where the kernel
+/// supplied it: the bytes not shared with anything, freed the moment the file
+/// is deleted.
+///
+/// It replaces only a file's *own* contribution. Shared bytes are still
+/// credited once at the lowest common ancestor of their family, because
+/// PRIVATESIZE cannot say *who* a file shares with -- and freeable(dir) has to
+/// mean what `rm -rf dir` returns, which for a family wholly inside `dir` is
+/// the whole extent.
+///
+/// Known residual: a clone that has been written to gets a fresh `clone_id`
+/// while its extents stay shared, so no family is detected and its shared
+/// bytes are credited nowhere. That under-reports. It is the safe direction --
+/// this tool must never promise space it cannot deliver -- and it replaces a
+/// Stage 5 behaviour that over-reported the same case by the same amount.
+pub fn aggregate_with_private(t: &mut Tree, private: &[Option<u64>]) {
     let n = t.len();
     if n == 0 { return; }
     let depth = depths(t);
@@ -65,7 +84,12 @@ pub fn aggregate(t: &mut Tree) {
         let shared = t.flags[i].has(Flags::SHARED);
         t.sub_logical[i] += t.logical[i];
         t.sub_blocks[i] += t.blocks[i];
-        if !shared { t.sub_excl[i] += t.blocks[i]; }
+        let own = match private.get(i).copied().flatten() {
+            Some(p) => p,
+            None if shared => 0,
+            None => t.blocks[i],
+        };
+        t.sub_excl[i] += own;
         t.sub_excl[i] += credit_at[i];
         if t.flags[i].is_dir() { t.sub_dirs[i] += 1; } else { t.sub_files[i] += 1; }
 

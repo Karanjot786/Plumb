@@ -277,4 +277,43 @@ pub fn freeable_of(_path: &Path) -> Option<u64> {
     None
 }
 
+/// The kernel's private-size answer for every file in the tree, indexed by
+/// node id. `None` for directories, symlinks, and anything the filesystem
+/// declines to answer for, which is the signal to keep the `clone_id`
+/// estimate rather than substitute a zero.
+#[cfg(target_os = "macos")]
+pub fn private_sizes(t: &Tree, root: &Path) -> Vec<Option<u64>> {
+    use rayon::prelude::*;
+    let n = t.len();
+    let mut out = vec![None; n];
+    if n == 0 {
+        return out;
+    }
+    // Paths built once by walking parents, not by n calls to Tree::path().
+    let base = root.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+    let mut paths: Vec<std::path::PathBuf> = Vec::with_capacity(n);
+    for i in 0..n {
+        let p = t.parent[i];
+        if p == NO_PARENT {
+            paths.push(base.join(t.name(i as NodeId)));
+        } else {
+            paths.push(paths[p as usize].join(t.name(i as NodeId)));
+        }
+    }
+    let answers: Vec<(usize, u64)> = (0..n)
+        .into_par_iter()
+        .filter(|&i| !t.flags[i].is_dir() && !t.flags[i].has(Flags::SYMLINK))
+        .filter_map(|i| private_size(&paths[i]).map(|v| (i, v.min(t.blocks[i]))))
+        .collect();
+    for (i, v) in answers {
+        out[i] = Some(v);
+    }
+    out
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn private_sizes(t: &Tree, _root: &Path) -> Vec<Option<u64>> {
+    vec![None; t.len()]
+}
+
 
