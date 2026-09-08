@@ -312,6 +312,19 @@ pub fn plan(tree: &Tree, root: &Path, ids: &[NodeId]) -> Plan {
             refused.push((path, Refusal::IsMountPoint));
             continue;
         }
+        // Reachable only where `ids` names descendants rather than the root:
+        // the UI's "Add to Cleanup" (`storage-ui/src/main.rs:478`), which
+        // passes the scan root and a selection under it. There a link pointing
+        // out of the tree is refused instead of followed.
+        //
+        // Both CLI routes - `sv clean <path>` and the uninstall flow - scan
+        // each path as its own root and pass `&[0]`, so `path == root` and this
+        // is inert. Inert is correct there: staging a symlinked root moves the
+        // link and escapes nothing. Audit U7 saw only that half.
+        debug_assert!(
+            path.starts_with(&root),
+            "symlink_escapes judged against an unrelated root"
+        );
         if blocklist::symlink_escapes(&path, &root) {
             refused.push((path, Refusal::EscapesRoot));
             continue;
