@@ -35,7 +35,21 @@ struct AppsCache {
 struct App {
     loaded: Mutex<Option<Loaded>>,
     apps: Mutex<AppsCache>,
+    /// Uninstall plans awaiting confirmation, keyed by the token the review
+    /// sheet was handed. The sheet shows one of these and `app_uninstall`
+    /// stages that same one, so the two can no longer disagree. Cleared
+    /// whenever the apps list is rebuilt, which is what makes a stale sheet
+    /// fail loudly instead of acting on a re-sorted index.
+    plans: Mutex<std::collections::HashMap<u64, storage_core::apps::CleanupPlan>>,
     watch: Mutex<Option<Box<dyn storage_core::watch::Watcher + Send>>>,
+}
+
+/// Handles for pending plans. Never reused, so a token from a cleared
+/// generation cannot collide with a live one.
+fn next_token() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(1);
+    N.fetch_add(1, Ordering::Relaxed)
 }
 
 fn now_secs() -> u32 {
@@ -759,7 +773,13 @@ struct AppDetail {
     /// Background jobs that would be stopped before anything moved.
     unload: Vec<String>,
     stage_bytes: u64,
-    stage_count: usize,
+    /// Handle for the plan behind this panel. The review sheet renders the
+    /// two lists below and `app_uninstall` stages this exact plan.
+    token: u64,
+    /// Exactly what will be staged.
+    staged: Vec<AssocOut>,
+    /// Everything discovered and deliberately left, with the reason.
+    excluded: Vec<AssocOut>,
 }
 
 fn app_out(
@@ -811,9 +831,30 @@ fn apps_list(guesses: bool, state: tauri::State<'_, App>) -> Result<Vec<AppOut>,
         .map(|(i, a)| app_out(i, a, &found[i], !apps::contesting_ids(&apps, i).is_empty()))
         .collect();
     *state.apps.lock().unwrap() = AppsCache { apps, found };
+    // Every outstanding review described the old list. Drop them all.
+    state.plans.lock().unwrap().clear();
     Ok(out)
 }
 
+fn assoc_out(i: &storage_core::apps::Associated) -> AssocOut {
+    let why = storage_core::apps::exclusion_reason(i);
+    AssocOut {
+        path: i.path.display().to_string(),
+        bytes: i.bytes,
+        category: i.category.label().to_string(),
+        evidence: i.evidence.label().to_string(),
+        removable: why.is_none(),
+        why: why.map(|w| w.to_string()),
+    }
+}
+
+/// Build the plan once, keep it, and hand back a token for it.
+///
+/// Nothing here rescans. The plan comes from the same associations the list
+/// was built from, so the panel, the sheet and the staging run are all one
+/// scan - previously these were three, with three different option sets, and
+/// the sheet could promise items that would not stage while staging items it
+/// had never shown.
 #[tauri::command]
 fn app_detail(idx: usize, state: tauri::State<'_, App>) -> Result<AppDetail, String> {
     use storage_core::apps;
@@ -821,31 +862,22 @@ fn app_detail(idx: usize, state: tauri::State<'_, App>) -> Result<AppDetail, Str
     let a = cache.apps.get(idx).ok_or("no such application")?;
     let found = &cache.found[idx];
 
-    let items = found
-        .iter()
-        .map(|i| {
-            let why = apps::exclusion_reason(i);
-            AssocOut {
-                path: i.path.display().to_string(),
-                bytes: i.bytes,
-                category: i.category.label().to_string(),
-                evidence: i.evidence.label().to_string(),
-                removable: why.is_none(),
-                why: why.map(|w| w.to_string()),
-            }
-        })
-        .collect();
+    let plan = apps::plan_from(a, found);
+    let staged: Vec<AssocOut> = plan.items.iter().map(|r| assoc_out(r.item())).collect();
+    let excluded: Vec<AssocOut> =
+        found.iter().filter(|i| apps::exclusion_reason(i).is_some()).map(assoc_out).collect();
 
-    // The plan is built here only to report what it would do. It moves nothing.
-    let others = apps::other_ids(&cache.apps, idx);
-    let plan = apps::uninstall_plan(a, &others, Default::default());
-    Ok(AppDetail {
+    let detail = AppDetail {
         app: app_out(idx, a, found, !apps::contesting_ids(&cache.apps, idx).is_empty()),
-        items,
+        items: found.iter().map(assoc_out).collect(),
         unload: plan.unload.iter().map(|u| u.label()).collect(),
         stage_bytes: plan.bytes,
-        stage_count: plan.items.len(),
-    })
+        token: next_token(),
+        staged,
+        excluded,
+    };
+    state.plans.lock().unwrap().insert(detail.token, plan);
+    Ok(detail)
 }
 
 #[derive(Serialize)]
@@ -862,16 +894,22 @@ struct UninstallOut {
 
 /// Stop the app's background jobs, then route every path through staging.
 /// Nothing is deleted; `cleanup_commit` remains the only thing that removes.
+///
+/// Addressed by token, never by list index. An index is a moving target: the
+/// list is name-sorted, and refreshing it while a detail panel is open could
+/// shift the slot and uninstall a different application.
 #[tauri::command]
-fn app_uninstall(idx: usize, state: tauri::State<'_, App>) -> Result<UninstallOut, String> {
+fn app_uninstall(token: u64, state: tauri::State<'_, App>) -> Result<UninstallOut, String> {
     use storage_core::apps;
-    // Build the plan and release the cache before doing any work, so the app
-    // list stays readable while a long stage runs.
-    let plan = {
-        let cache = state.apps.lock().unwrap();
-        let a = cache.apps.get(idx).ok_or("no such application")?;
-        apps::uninstall_plan(a, &apps::other_ids(&cache.apps, idx), Default::default())
-    };
+    // Take the plan the review sheet was built from. Gone means the list was
+    // rebuilt underneath it, and this request is about a world that no longer
+    // exists.
+    let plan = state
+        .plans
+        .lock()
+        .unwrap()
+        .remove(&token)
+        .ok_or("this review is out of date - reopen the application and try again")?;
     if plan.is_empty() {
         return Err("nothing to stage".into());
     }
@@ -885,6 +923,13 @@ fn app_uninstall(idx: usize, state: tauri::State<'_, App>) -> Result<UninstallOu
     let unload_problems = apps::perform_unload(&plan);
     let label = format!("uninstall {}", plan.app);
     let m = apps::stage_prepared(&prepared, &label).map_err(|e| e.to_string())?;
+    // Anything that changed between planning and moving is named, not counted.
+    let mut refused = refused;
+    refused.extend(
+        apps::changed_since_plan(&prepared, &m)
+            .into_iter()
+            .map(|(p, w)| (p.display().to_string(), w.to_string())),
+    );
     Ok(UninstallOut {
         manifest: m.id,
         count: m.items.len(),

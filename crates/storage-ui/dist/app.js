@@ -752,8 +752,17 @@ async function loadApps() {
   paintAppList();
 }
 
-$("apps-refresh").onclick = loadApps;
-$("apps-guesses").onchange = loadApps;
+// Rebuilding the list drops every stored plan on the backend, so any open
+// review is now stale. Close it rather than leave a button that will fail.
+async function reloadApps() {
+  M.detail = null;
+  M.sel = -1;
+  $("sheet").hidden = true;
+  $("app-detail").replaceChildren();
+  await loadApps();
+}
+$("apps-refresh").onclick = reloadApps;
+$("apps-guesses").onchange = reloadApps;
 
 function paintAppList() {
   const rows = [...M.apps].sort(
@@ -895,13 +904,13 @@ async function openApp(idx) {
   const btn = document.createElement("button");
   btn.className = "wide danger";
   btn.textContent = "Uninstall Completely";
-  btn.disabled = d.stage_count === 0;
+  btn.disabled = d.staged.length === 0;
   btn.onclick = () => reviewUninstall(d);
   box.append(btn);
 
   const note = document.createElement("p");
   note.className = "muted tiny";
-  note.textContent = `${d.stage_count} item(s), ${human(Number(d.stage_bytes))} would be staged. Nothing is deleted until you commit.`;
+  note.textContent = `${d.staged.length} item(s), ${human(Number(d.stage_bytes))} would be staged. Nothing is deleted until you commit.`;
   box.append(note);
 }
 
@@ -911,7 +920,7 @@ async function openApp(idx) {
 function reviewUninstall(d) {
   $("sheet-title").textContent = `Uninstall ${d.app.name}`;
   $("sheet-sub").textContent =
-    `${d.stage_count} item(s), ${human(Number(d.stage_bytes))} will be moved to staging.`;
+    `${d.staged.length} item(s), ${human(Number(d.stage_bytes))} will be moved to staging.`;
 
   const body = $("sheet-body");
   body.replaceChildren();
@@ -923,8 +932,11 @@ function reviewUninstall(d) {
     body.append(p);
   }
 
-  const go = d.items.filter((i) => i.removable);
-  const keep = d.items.filter((i) => !i.removable);
+  // The plan's own two lists, not a re-derivation from the panel. What the
+  // sheet shows is what `app_uninstall` will stage, because both are the same
+  // stored plan.
+  const go = d.staged;
+  const keep = d.excluded;
 
   const h1 = document.createElement("p");
   h1.className = "grp muted";
@@ -936,7 +948,14 @@ function reviewUninstall(d) {
     const p = document.createElement("span");
     p.className = "p";
     p.textContent = it.path;
+    // Say what each match rests on. With "possible leftovers" ticked these
+    // include guesses, and a guess about to be moved should say so.
+    const ev = document.createElement("span");
+    ev.className = "ev";
+    ev.textContent = it.evidence;
+    p.append(ev);
     const b = document.createElement("span");
+    b.className = "b";
     b.textContent = human(Number(it.bytes));
     li.append(p, b);
     ul.append(li);
@@ -971,10 +990,13 @@ function reviewUninstall(d) {
     $("sheet-go").disabled = true;
     $("sheet-go").textContent = "staging...";
     try {
-      const r = await invoke("app_uninstall", { idx: d.app.idx });
+      const r = await invoke("app_uninstall", { token: d.token });
       $("sheet").hidden = true;
+      const missed = r.refused.length
+        ? ` - ${r.refused.length} not moved: ${r.refused.map(([p, w]) => `${p} (${w})`).join("; ")}`
+        : "";
       $("status").textContent =
-        `staged ${r.count} item(s), ${human(Number(r.bytes))} - undo from Staged, manifest ${r.manifest}`;
+        `staged ${r.count} item(s), ${human(Number(r.bytes))} - undo from Staged, manifest ${r.manifest}${missed}`;
       for (const [what, why] of r.unload_problems) {
         console.warn(`${what}: ${why}`);
       }

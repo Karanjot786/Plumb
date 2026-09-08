@@ -897,12 +897,27 @@ fn login_items(_bundle: &Path) -> Vec<String> {
 ///
 /// `others` is `other_ids` over the installed set; see `associated_for`.
 pub fn uninstall_plan(app: &App, others: &[String], opts: LeftoverOpts) -> CleanupPlan {
-    let found = associated_for(app, others, opts);
-    let items = stageable(&found);
+    plan_from(app, &associated_for(app, others, opts))
+}
+
+/// Build the plan from associations that were already discovered.
+///
+/// This is what lets one scan serve the list, the review sheet and the
+/// staging run. Rebuilding the plan from a fresh scan at confirm time meant
+/// the sheet was not the plan that executed: a leftover created in between -
+/// the user launches the app and it recreates its container - would be staged
+/// without ever having been shown.
+pub fn plan_from(app: &App, found: &[Associated]) -> CleanupPlan {
+    let items = stageable(found);
     let excluded: Vec<(PathBuf, &'static str)> = found
         .iter()
         .filter_map(|a| exclusion_reason(a).map(|why| (a.path.clone(), why)))
         .collect();
+    debug_assert_eq!(
+        items.len() + excluded.len(),
+        found.len(),
+        "every discovered path must be either staged or excluded, never both or neither"
+    );
 
     let mut unload: Vec<Unload> =
         login_items(&app.path).into_iter().map(Unload::LoginItem).collect();
@@ -1057,6 +1072,24 @@ pub fn prepare_uninstall(plan: &CleanupPlan, threads: usize) -> io::Result<Prepa
         "the bundle was neither staged nor refused"
     );
     Ok(Prepared { inner: all, refused })
+}
+
+/// Paths the planner accepted but `clean::stage` declined to move.
+///
+/// `clean::stage` re-checks `(dev, ino, mtime)` immediately before each
+/// rename and skips anything that changed, which is the TOCTOU defence - but
+/// it drops those items silently. This names them, so a caller can report a
+/// change rather than a vague count.
+pub fn changed_since_plan(
+    prepared: &Prepared,
+    manifest: &crate::Manifest,
+) -> Vec<(PathBuf, crate::Refusal)> {
+    let moved: Vec<&Path> = manifest.items.iter().map(|i| i.original.as_path()).collect();
+    prepared
+        .paths()
+        .filter(|p| !moved.contains(p))
+        .map(|p| (p.to_path_buf(), crate::Refusal::Changed))
+        .collect()
 }
 
 /// Move a prepared plan into staging, so one `restore` undoes the whole
