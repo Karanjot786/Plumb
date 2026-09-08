@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "Local window only; no plugins, no network.",
+  "windows": ["main"],
+  "permissions": ["core:default", "dialog:allow-open"]
+}

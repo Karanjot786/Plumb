@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Storage Visualizer</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header id="topbar">
+  <nav id="crumbs"></nav>
+  <input id="filter" type="search" placeholder="filter by name" spellcheck="false" />
+</header>
+
+<main>
+  <aside id="rail">
+    <section>
+      <h2>Scan</h2>
+      <div id="targets"></div>
+      <div class="row">
+        <input id="path" type="text" placeholder="/path/to/folder" spellcheck="false" />
+        <button id="go">Scan</button>
+      </div>
+      <button id="pick" class="wide">Choose folder...</button>
+    </section>
+
+    <section id="volume-card" hidden>
+      <h2>Volume</h2>
+      <div class="donut-wrap">
+        <div id="donut"></div>
+        <div class="donut-legend">
+          <div><i class="sw scanned"></i>scanned <span id="v-scanned"></span></div>
+          <div><i class="sw other"></i>elsewhere <span id="v-other"></span></div>
+          <div><i class="sw free"></i>free <span id="v-free"></span></div>
+        </div>
+      </div>
+      <p id="scanpath" class="muted"></p>
+      <p id="scanmeta" class="muted"></p>
+    </section>
+
+    <section id="wins-card" hidden>
+      <h2>Quick wins</h2>
+      <ul id="wins"></ul>
+    </section>
+
+    <section id="tray-card" hidden>
+      <h2>Cleanup tray</h2>
+      <ul id="tray"></ul>
+      <p id="tray-total"></p>
+      <p id="tray-refused" class="muted"></p>
+      <div class="row">
+        <button id="stage-btn">Stage</button>
+        <button id="tray-clear">Clear</button>
+      </div>
+      <p class="muted tiny">Staging moves files into an app-owned folder. Nothing is deleted until you commit.</p>
+    </section>
+
+    <section id="pending-card" hidden>
+      <h2>Staged, awaiting commit</h2>
+      <ul id="pending"></ul>
+    </section>
+
+    <section id="types-card" hidden>
+      <h2>File types</h2>
+      <div id="typebar"></div>
+      <ul id="typelist"></ul>
+    </section>
+  </aside>
+
+  <section id="center">
+    <div id="title">
+      <h1 id="title-name">Pick a folder to begin</h1>
+      <p id="title-sub" class="muted"></p>
+    </div>
+
+    <div id="tabs"></div>
+
+    <div id="controls">
+      <label>Colour
+        <select id="color">
+          <option value="0">by type</option>
+          <option value="1">by folder</option>
+          <option value="2">by age</option>
+        </select>
+      </label>
+      <label>Size
+        <select id="size">
+          <option value="0">freeable</option>
+          <option value="1">allocated</option>
+          <option value="2">logical</option>
+        </select>
+      </label>
+      <label id="scope-wrap" hidden>Scope
+        <select id="scope">
+          <option value="0">this folder</option>
+          <option value="1">biggest files anywhere</option>
+          <option value="2">biggest folders anywhere</option>
+        </select>
+      </label>
+      <label>Depth <input id="depth" type="range" min="1" max="8" value="4" />
+        <span id="depth-val">4</span>
+      </label>
+      <span id="status" class="muted"></span>
+    </div>
+
+    <div id="stage">
+      <canvas id="image"></canvas>
+      <canvas id="overlay"></canvas>
+      <div id="empty">No scan yet.</div>
+    </div>
+  </section>
+
+  <aside id="inspector">
+    <div id="insp-empty" class="muted">Hover a tile.</div>
+    <div id="insp" hidden>
+      <h2 id="i-name"></h2>
+      <p id="i-path" class="muted path"></p>
+      <p id="i-size"></p>
+      <p id="i-pct" class="muted"></p>
+      <h3>Details</h3>
+      <dl id="i-details"></dl>
+      <button id="add-cleanup" class="wide">Add to Cleanup</button>
+      <h3>Largest inside</h3>
+      <ul id="i-children"></ul>
+    </div>
+  </aside>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>

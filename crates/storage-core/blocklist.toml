@@ -1,0 +1,134 @@
+# Deny rules, embedded at build time and checked before anything is staged.
+#
+# Entries are resolved to (dev, ino) once at load. A candidate is denied when it
+# or ANY of its ancestors matches one of those pairs, so `/SYSTEM/Library/x` is
+# caught on case-insensitive APFS even though the string differs.
+#
+# A path that does not exist on this machine is simply inert.
+
+# ---------------------------------------------------------------- macOS
+
+[[deny]]
+path = "/System"
+reason = "system volume"
+
+[[deny]]
+path = "/Library"
+reason = "system-wide library"
+
+[[deny]]
+path = "/private/var/db"
+reason = "system database"
+
+[[deny]]
+path = "/usr"
+reason = "system prefix"
+
+[[deny]]
+path = "/bin"
+reason = "system binaries"
+
+[[deny]]
+path = "/sbin"
+reason = "system binaries"
+
+[[deny]]
+path = "/Applications"
+reason = "installed applications"
+
+# `exact` denies the directory itself but not what is under it. Without it,
+# every file on every external drive would be refused, since /Volumes is an
+# ancestor of all of them. Volume roots stay protected by the mount-point check.
+[[deny]]
+path = "/Volumes"
+reason = "mount root"
+exact = true
+
+[[deny]]
+path = "/.vol"
+reason = "volfs root"
+exact = true
+
+[[deny]]
+path = "/media"
+reason = "mount root"
+exact = true
+
+[[deny]]
+path = "/mnt"
+reason = "mount root"
+exact = true
+
+# ---------------------------------------------------------------- Linux
+
+[[deny]]
+path = "/boot"
+reason = "boot partition"
+
+[[deny]]
+path = "/etc"
+reason = "system configuration"
+
+[[deny]]
+path = "/lib"
+reason = "system libraries"
+
+[[deny]]
+path = "/lib64"
+reason = "system libraries"
+
+[[deny]]
+path = "/opt"
+reason = "system prefix"
+
+[[deny]]
+path = "/proc"
+reason = "kernel filesystem"
+
+[[deny]]
+path = "/sys"
+reason = "kernel filesystem"
+
+[[deny]]
+path = "/dev"
+reason = "device filesystem"
+
+[[deny]]
+path = "/run"
+reason = "runtime state"
+
+[[deny]]
+path = "/var/lib"
+reason = "package-manager state"
+
+# ---------------------------------------------------------------- Windows
+
+[[deny]]
+path = 'C:\Windows'
+reason = "system directory"
+
+# WinSxS is report-only by design: removing a component store entry breaks
+# servicing and Windows has no supported way to put one back.
+[[deny]]
+path = 'C:\Windows\WinSxS'
+reason = "component store, report-only"
+
+[[deny]]
+path = 'C:\Program Files'
+reason = "installed applications"
+
+[[deny]]
+path = 'C:\Program Files (x86)'
+reason = "installed applications"
+
+[[deny]]
+path = 'C:\ProgramData'
+reason = "system-wide application state"
+
+[[deny]]
+path = 'C:\$Recycle.Bin'
+reason = "recycle bin"
+
+[[deny]]
+path = 'C:\System Volume Information'
+reason = "volume metadata"

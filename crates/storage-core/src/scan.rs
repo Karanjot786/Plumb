@@ -83,7 +83,7 @@ enum Step { Visit(usize, NodeId), Close(NodeId) }
 /// dua-core's Order::ParentFirst guarantees only that a parent precedes its
 /// descendants; its own docs say "sibling order is unspecified in both modes".
 /// So collect, then emit in explicit DFS order to get contiguous subtrees.
-pub fn scan(root: &Path, threads: usize) -> io::Result<Tree> {
+pub fn scan(root: &Path, threads: usize, mut progress: impl FnMut(u64) + Send) -> io::Result<Tree> {
     let opts = Options {
         skip_metadata: false,
         #[cfg(target_os = "macos")]
@@ -102,6 +102,11 @@ pub fn scan(root: &Path, threads: usize) -> io::Result<Tree> {
             None => (EMPTY, false),
         };
         let idx = raw.len();
+        // Every 4096 entries, not every entry: the callback crosses an IPC
+        // boundary in the UI and would otherwise cost more than the walk.
+        if idx % 4096 == 0 {
+            progress(idx as u64);
+        }
         let dir_idx = e.directory_id.map(|d| d.index());
         if let Some(d) = dir_idx {
             if children_of.len() <= d { children_of.resize(d + 1, Vec::new()); }

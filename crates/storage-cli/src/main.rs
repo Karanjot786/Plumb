@@ -1,6 +1,9 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use storage_core::{aggregate, quick_wins, reconcile, scan, volume_of, Flags, NodeId, Tree};
+use storage_core::{
+    aggregate, commit, list_staged, plan, quick_wins, reconcile, restore, scan, stage, volume_of,
+    Flags, NodeId, Plan, Tree,
+};
 
 #[derive(Parser)]
 #[command(name = "sv", about = "Storage visualizer engine")]
@@ -26,6 +29,19 @@ enum Cmd {
         #[arg(long, default_value_t = 365)] days: u32,
         #[arg(long, default_value_t = 20)] limit: usize,
     },
+    /// Stage paths for removal. Nothing is deleted; use `commit` for that.
+    Clean {
+        paths: Vec<PathBuf>,
+        /// Print the manifest that would be written and touch nothing.
+        #[arg(long)] dry_run: bool,
+        #[arg(long, default_value = "cleanup")] label: String,
+    },
+    /// List pending manifests.
+    Staged,
+    /// Move everything in a manifest back where it came from.
+    Restore { id: u64 },
+    /// Permanently remove everything in a manifest.
+    Commit { id: u64 },
 }
 
 fn human(b: u64) -> String {
@@ -40,7 +56,7 @@ fn load(path: &PathBuf, threads: usize) -> std::io::Result<Tree> {
     let threads = if threads == 0 {
         std::thread::available_parallelism().map_or(4, |n| n.get())
     } else { threads };
-    let mut t = scan(path, threads)?;
+    let mut t = scan(path, threads, |_| {})?;
     aggregate(&mut t);
     Ok(t)
 }
@@ -128,6 +144,109 @@ fn main() -> std::io::Result<()> {
                 let age = (now - t.mtime[i as usize]) / 86_400;
                 println!("{:>3}  {:>10}  {:>5}d  {}", n + 1, human(t.blocks[i as usize]), age, t.path(i));
             }
+        }
+        Cmd::Clean { paths, dry_run, label } => {
+            if paths.is_empty() {
+                eprintln!("nothing to clean: give at least one path");
+                return Ok(());
+            }
+            // One command produces one manifest, so a single `restore` undoes
+            // the whole thing.
+            let mut all: Option<Plan> = None;
+            let mut blocked = Vec::new();
+            for p in paths {
+                // Check before scanning: a blocked path should cost nothing,
+                // and walking /System to be told no is absurd.
+                let c = storage_core::blocklist::canon_keep_link(p);
+                let why = storage_core::blocklist::shape_problem(&c)
+                    .or_else(|| storage_core::blocklist::denied(&c));
+                if let Some(why) = why {
+                    println!("refused  {}  (blocked: {why})", p.display());
+                    blocked.push(p.clone());
+                    continue;
+                }
+                let t = load(p, cli.threads)?;
+                if t.is_empty() {
+                    eprintln!("skipping {}: nothing readable", p.display());
+                    continue;
+                }
+                let root = storage_core::blocklist::canon_keep_link(p);
+                let one = plan(&t, &root, &[0]);
+                match &mut all {
+                    Some(a) => a.absorb(one),
+                    None => all = Some(one),
+                }
+            }
+            let Some(all) = all else {
+                if !blocked.is_empty() {
+                    println!("\n  {} path(s) refused, nothing staged", blocked.len());
+                }
+                return Ok(());
+            };
+
+            for (path, why) in &all.refused {
+                println!("refused  {}  ({why})", path.display());
+            }
+            if cli.json {
+                let m = all.manifest(label);
+                println!("{}", serde_json::to_string_pretty(&m).unwrap());
+            } else {
+                for i in &all.staged {
+                    println!("{:>10}  {}", human(i.bytes), i.original.display());
+                }
+                println!("\n  {} items, {}", all.staged.len(), human(all.total_bytes));
+            }
+            if *dry_run {
+                println!("\n  dry run: nothing was moved");
+                return Ok(());
+            }
+            if all.staged.is_empty() {
+                println!("\n  nothing to stage");
+                return Ok(());
+            }
+            let m = stage(&all, label)?;
+            let skipped = all.staged.len() - m.items.len();
+            println!("\n  staged {} items, {} -> manifest {}", m.items.len(), human(m.total_bytes), m.id);
+            if skipped > 0 {
+                println!("  {skipped} skipped: changed between planning and staging");
+            }
+            println!("  undo with: sv restore {}", m.id);
+        }
+        Cmd::Staged => {
+            let now = storage_core::clean::now_secs();
+            let list = list_staged()?;
+            if list.is_empty() {
+                println!("nothing staged");
+                return Ok(());
+            }
+            let mut total = 0u64;
+            for m in &list {
+                let days = (m.expires_at.saturating_sub(now)) / 86_400;
+                let when = if m.is_expired(now) {
+                    "expired".to_string()
+                } else {
+                    format!("{days}d left")
+                };
+                println!("{:>12}  {:>10}  {:<16} {} items  {when}",
+                    m.id, human(m.total_bytes), m.label, m.items.len());
+                total += m.total_bytes;
+            }
+            println!("\n  {} pending, {}", list.len(), human(total));
+        }
+        Cmd::Restore { id } => {
+            let n = restore(*id)?;
+            println!("restored {n} items from manifest {id}");
+            let left = storage_core::clean::read_manifest(*id)
+                .map(|m| m.items.len())
+                .unwrap_or(0);
+            if left > 0 {
+                println!("  {left} left staged: something already occupies their original path");
+            }
+        }
+        Cmd::Commit { id } => {
+            let freed = commit(*id)?;
+            println!("removed manifest {id}, {} freed", human(freed));
+            println!("  entries sharing blocks with another path free less than their listed size");
         }
     }
     Ok(())

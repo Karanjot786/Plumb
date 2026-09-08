@@ -1,0 +1,27 @@
+{
+  "productName": "Storage Visualizer",
+  "version": "0.1.0",
+  "identifier": "dev.visualize.storage",
+  "build": {
+    "frontendDist": "dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "Storage Visualizer",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1040,
+        "minHeight": 640
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false,
+    "targets": "all"
+  }
+}
