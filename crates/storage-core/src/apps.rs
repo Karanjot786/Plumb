@@ -234,8 +234,12 @@ impl Removable {
     /// `None` for anything that must never be staged. The system test is
     /// re-derived from the path itself rather than trusting the `system_level`
     /// flag, so a wrongly-built `Associated` cannot smuggle one through.
+    ///
+    /// Unproven evidence is refused here rather than at the call site, so the
+    /// CLI cannot be more dangerous than the UI. `--guesses` widens what is
+    /// *shown*; it does not widen what moves.
     pub fn new(a: &Associated) -> Option<Removable> {
-        if a.system_level || a.shared || is_system_path(&a.path) {
+        if a.system_level || a.shared || !a.evidence.proven() || is_system_path(&a.path) {
             return None;
         }
         Some(Removable(a.clone()))
@@ -267,6 +271,8 @@ pub fn exclusion_reason(a: &Associated) -> Option<&'static str> {
         Some("system level - review only, not removable here")
     } else if a.shared {
         Some("another installed app claims this bundle id")
+    } else if !a.evidence.proven() {
+        Some("name match only - a guess, not proof; remove by hand if you are sure")
     } else {
         None
     }

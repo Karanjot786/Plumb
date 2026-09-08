@@ -59,7 +59,8 @@ enum Cmd {
         app: String,
         /// Actually stage. Without it this prints the review and touches nothing.
         #[arg(long)] yes: bool,
-        /// Include name-keyed matches. These are guesses, not proof.
+        /// Also show name-keyed matches. They are guesses, not proof, so they
+        /// are listed under "left alone" and are never staged.
         #[arg(long)] guesses: bool,
     },
     /// Find byte-identical files and report what deleting them would free.
