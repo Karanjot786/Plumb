@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+use storage_core::snapshot;
 use storage_core::{
     aggregate, commit, list_staged, plan, quick_wins, reconcile, restore, scan, stage, volume_of,
     Flags, NodeId, Plan, Tree,
@@ -42,6 +43,22 @@ enum Cmd {
     Restore { id: u64 },
     /// Permanently remove everything in a manifest.
     Commit { id: u64 },
+    /// Save, list and compare snapshots of a scanned tree.
+    Snapshot {
+        #[command(subcommand)]
+        cmd: SnapCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum SnapCmd {
+    /// Scan a path and write a snapshot.
+    Save {
+        path: PathBuf,
+        #[arg(long)] out: Option<PathBuf>,
+    },
+    /// List saved snapshots, newest first.
+    List,
 }
 
 fn human(b: u64) -> String {
@@ -254,6 +271,69 @@ fn main() -> std::io::Result<()> {
             }
             println!("  entries sharing blocks with another path free less than their listed size");
         }
+        Cmd::Snapshot { cmd } => match cmd {
+            SnapCmd::Save { path, out } => {
+                let t = load(path, cli.threads)?;
+                if t.is_empty() {
+                    println!("nothing scanned");
+                    return Ok(());
+                }
+                let out = match out {
+                    Some(o) => o.clone(),
+                    None => {
+                        let stem = path
+                            .file_name()
+                            .map(|s| s.to_string_lossy().replace(['/', ' '], "_"))
+                            .unwrap_or_else(|| "root".into());
+                        snapshot::snapshots_dir()?
+                            .join(format!("{stem}-{}.svsnap", storage_core::clean::now_secs()))
+                    }
+                };
+                let started = std::time::Instant::now();
+                snapshot::save(&t, &out)?;
+                let wrote = started.elapsed();
+
+                // Prove the round trip here rather than trusting it: reopen the
+                // file we just wrote and compare against the live arena.
+                let opened = std::time::Instant::now();
+                let snap = snapshot::Snapshot::open(&out)?;
+                let read = opened.elapsed();
+                let live = snapshot::Totals::of(&t);
+                let back = snap.root_totals();
+                println!("{}", out.display());
+                println!("  {:<12} {} nodes", "scanned", t.len());
+                println!("  {:<12} {} ({:?} to write, {:?} to open+validate)",
+                    "snapshot", human(std::fs::metadata(&out)?.len()), wrote, read);
+                match (&live, &back) {
+                    (Some(a), Some(b)) if a == b => {
+                        println!("  {:<12} identical to the live scan", "round trip");
+                        println!("    nodes {}  logical {}  allocated {}  freeable {}  files {}  dirs {}",
+                            b.nodes, b.logical, b.allocated, b.freeable, b.files, b.dirs);
+                    }
+                    _ => {
+                        println!("  {:<12} MISMATCH", "round trip");
+                        println!("    live     {live:?}");
+                        println!("    reopened {back:?}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            SnapCmd::List => {
+                let list = snapshot::list()?;
+                if list.is_empty() {
+                    println!("no snapshots");
+                    return Ok(());
+                }
+                for e in &list {
+                    let nodes = snapshot::Snapshot::open(&e.path)
+                        .map(|s| s.len().to_string())
+                        .unwrap_or_else(|err| format!("unreadable: {err}"));
+                    println!("{:>10}  {:>10} nodes  {}", human(e.bytes), nodes,
+                        e.path.file_name().unwrap_or_default().to_string_lossy());
+                }
+                println!("\n  {} snapshot(s) in {}", list.len(), snapshot::snapshots_dir()?.display());
+            }
+        },
     }
     Ok(())
 }

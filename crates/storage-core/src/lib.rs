@@ -6,6 +6,7 @@ pub mod layout;
 pub mod render;
 pub mod rules;
 pub mod scan;
+pub mod snapshot;
 pub mod volume;
 
 pub use aggregate::aggregate;

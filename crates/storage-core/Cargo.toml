@@ -11,6 +11,13 @@ serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true
 toml = "0.9"
 
+# The format-control features are pinned explicitly even though they are
+# defaults: a transitive dependency enabling `big_endian` would silently
+# rewrite the on-disk snapshot format under us.
+rkyv = { version = "0.8.18", default-features = false, features = [
+    "std", "alloc", "bytecheck", "little_endian", "aligned", "pointer_width_32" ] }
+memmap2 = "0.9"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

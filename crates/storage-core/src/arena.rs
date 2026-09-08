@@ -4,6 +4,7 @@ pub type NodeId = u32;
 pub const NO_PARENT: NodeId = u32::MAX;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct Flags(pub u8);
 
 impl Flags {
@@ -22,6 +23,7 @@ impl Flags {
 /// Every field is a plain integer on purpose: it is what makes the stage-5
 /// snapshot a zero-copy read. Do not add String or enum-with-payload here.
 #[derive(Default)]
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct Tree {
     pub parent: Vec<NodeId>,
     pub subtree_len: Vec<u32>,
