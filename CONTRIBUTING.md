@@ -67,11 +67,11 @@ cargo run -p plumb-cli -- scan "$F"      # freeable must be below logical
 | `plumb-cli` | `plumb`. A thin shell over the engine; every feature is reachable here first. |
 | `plumb-ui` | The Tauri desktop app. Commands only — no logic that is not in the core. |
 
-Read `HANDOFF.md` before anything else. It records what is verified by having been run
-versus what merely compiles, which is a distinction this project takes seriously. The
-design document, kept in the separate private `Plumb_docs` repository, is §-numbered and
-is the reference for
-why things are the way they are.
+The handoff notes and the design document live in a separate private repository,
+`Plumb_docs`. The handoff records what is verified by having been run versus what merely
+compiles, which is a distinction this project takes seriously; the design document is
+§-numbered and is the reference for why things are the way they are. Neither ships with
+the code.
 
 ## House style
 
