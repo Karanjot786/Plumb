@@ -701,3 +701,372 @@ new ResizeObserver(() => {
 paintTabs();
 paintPending();
 paintSnaps();
+
+// ---------------------------------------------------------------- stage 6
+
+// --- mode switching -------------------------------------------------------
+
+const M = {
+  mode: "storage",
+  apps: [],
+  sel: -1,
+  detail: null,
+  events: [],
+  cap: 500,
+  paused: false,
+  timer: 0,
+  seen: 0,
+};
+
+const STORAGE_ONLY = ["tabs", "controls", "stage", "title"];
+
+function setMode(mode) {
+  M.mode = mode;
+  [...$("modes").children].forEach((b) => b.classList.toggle("on", b.dataset.mode === mode));
+  STORAGE_ONLY.forEach((id) => { $(id).hidden = mode !== "storage"; });
+  $("apps-panel").hidden = mode !== "apps";
+  $("mon-panel").hidden = mode !== "monitor";
+  $("rail").hidden = mode !== "storage";
+  $("inspector").hidden = mode !== "storage";
+  $("filter").hidden = mode !== "storage";
+  if (mode === "apps" && !M.apps.length) loadApps();
+  if (mode === "storage") draw();
+}
+
+[...$("modes").children].forEach((b) => {
+  b.onclick = () => setMode(b.dataset.mode);
+});
+
+// --- applications ---------------------------------------------------------
+
+async function loadApps() {
+  $("apps-count").textContent = "scanning applications...";
+  try {
+    M.apps = await invoke("apps_list", { guesses: $("apps-guesses").checked });
+  } catch (e) {
+    $("apps-count").textContent = String(e);
+    return;
+  }
+  const total = M.apps.reduce((a, x) => a + Number(x.bundle_bytes) + Number(x.support_bytes), 0);
+  $("apps-count").textContent = `${M.apps.length} applications - ${human(total)}`;
+  paintAppList();
+}
+
+$("apps-refresh").onclick = loadApps;
+$("apps-guesses").onchange = loadApps;
+
+function paintAppList() {
+  const rows = [...M.apps].sort(
+    (a, b) => Number(b.bundle_bytes) + Number(b.support_bytes)
+            - Number(a.bundle_bytes) - Number(a.support_bytes),
+  );
+  $("apps-list").replaceChildren(...rows.map((a) => {
+    const li = document.createElement("li");
+    li.classList.toggle("on", a.idx === M.sel);
+
+    const name = document.createElement("span");
+    name.className = "an";
+    name.textContent = a.name;
+    const sub = document.createElement("span");
+    sub.className = "al";
+    const bits = [];
+    if (a.leftovers) bits.push(`+${a.leftovers} leftover${a.leftovers === 1 ? "" : "s"}`);
+    if (a.contested) bits.push("bundle id shared");
+    sub.textContent = bits.join(" - ") || (a.bundle_id ?? "no bundle id");
+    name.append(sub);
+
+    const size = document.createElement("span");
+    size.className = "as";
+    size.textContent = human(Number(a.bundle_bytes) + Number(a.support_bytes));
+
+    li.append(name, size);
+    li.onclick = () => openApp(a.idx);
+    return li;
+  }));
+}
+
+function assocList(items) {
+  // Grouped by category, biggest group first, so the panel reads as a
+  // footprint rather than a flat dump.
+  const groups = new Map();
+  for (const it of items) {
+    if (!groups.has(it.category)) groups.set(it.category, []);
+    groups.get(it.category).push(it);
+  }
+  const out = [];
+  const ordered = [...groups.entries()].sort(
+    (a, b) => b[1].reduce((s, x) => s + Number(x.bytes), 0)
+            - a[1].reduce((s, x) => s + Number(x.bytes), 0),
+  );
+  for (const [cat, list] of ordered) {
+    const h = document.createElement("p");
+    h.className = "grp muted";
+    const sum = list.reduce((s, x) => s + Number(x.bytes), 0);
+    h.textContent = `${cat} - ${human(sum)}`;
+    out.push(h);
+
+    const ul = document.createElement("ul");
+    for (const it of list) {
+      const li = document.createElement("li");
+      li.classList.toggle("locked", !it.removable);
+      const p = document.createElement("span");
+      p.className = "p";
+      p.textContent = it.path;
+      const ev = document.createElement("span");
+      ev.className = "ev";
+      ev.textContent = it.removable
+        ? it.evidence
+        : `${it.evidence} - review only, not removable here`;
+      p.append(ev);
+      const b = document.createElement("span");
+      b.className = "b";
+      b.textContent = human(Number(it.bytes));
+      li.append(p, b);
+      ul.append(li);
+    }
+    out.push(ul);
+  }
+  return out;
+}
+
+async function openApp(idx) {
+  M.sel = idx;
+  paintAppList();
+  const d = await invoke("app_detail", { idx });
+  M.detail = d;
+
+  const box = $("app-detail");
+  box.replaceChildren();
+
+  const h = document.createElement("h1");
+  h.textContent = d.app.name;
+  const sub = document.createElement("p");
+  sub.className = "muted path";
+  sub.textContent = [d.app.bundle_id ?? "no bundle id", d.app.version ? `v${d.app.version}` : null, d.app.path]
+    .filter(Boolean).join("  -  ");
+  box.append(h, sub);
+
+  const bundle = Number(d.app.bundle_bytes);
+  const support = Number(d.app.support_bytes);
+  const total = bundle + support;
+
+  const cap = document.createElement("h3");
+  cap.textContent = "Total footprint";
+  box.append(cap);
+
+  const foot = document.createElement("div");
+  foot.className = "foot";
+  const big = document.createElement("div");
+  big.className = "big";
+  big.textContent = human(total);
+  const split = document.createElement("div");
+  split.className = "split";
+  const bar = document.createElement("div");
+  bar.className = "bar";
+  const pct = total ? (bundle / total) * 100 : 100;
+  const i1 = document.createElement("i");
+  i1.className = "b1";
+  i1.style.width = `${pct}%`;
+  const i2 = document.createElement("i");
+  i2.className = "b2";
+  i2.style.width = `${100 - pct}%`;
+  bar.append(i1, i2);
+  const keys = document.createElement("div");
+  keys.className = "keys";
+  keys.innerHTML =
+    `<span><i style="background:var(--accent)"></i>bundle ${human(bundle)}</span>` +
+    `<span><i style="background:#c9a888"></i>support files ${human(support)}</span>`;
+  split.append(bar, keys);
+  foot.append(big, split);
+  box.append(foot);
+
+  if (d.app.contested) {
+    const w = document.createElement("p");
+    w.className = "muted";
+    w.textContent =
+      "Another installed app claims this bundle id, so its shared data is kept. Only the app bundle can be removed.";
+    box.append(w);
+  }
+
+  const ah = document.createElement("h3");
+  ah.textContent = "Associated files";
+  box.append(ah, ...assocList(d.items));
+
+  const btn = document.createElement("button");
+  btn.className = "wide danger";
+  btn.textContent = "Uninstall Completely";
+  btn.disabled = d.stage_count === 0;
+  btn.onclick = () => reviewUninstall(d);
+  box.append(btn);
+
+  const note = document.createElement("p");
+  note.className = "muted tiny";
+  note.textContent = `${d.stage_count} item(s), ${human(Number(d.stage_bytes))} would be staged. Nothing is deleted until you commit.`;
+  box.append(note);
+}
+
+// --- review sheet ---------------------------------------------------------
+
+// Nothing is staged until this sheet is confirmed.
+function reviewUninstall(d) {
+  $("sheet-title").textContent = `Uninstall ${d.app.name}`;
+  $("sheet-sub").textContent =
+    `${d.stage_count} item(s), ${human(Number(d.stage_bytes))} will be moved to staging.`;
+
+  const body = $("sheet-body");
+  body.replaceChildren();
+
+  if (d.unload.length) {
+    const p = document.createElement("p");
+    p.className = "muted";
+    p.textContent = `Will be stopped first so nothing recreates its files: ${d.unload.join(", ")}`;
+    body.append(p);
+  }
+
+  const go = d.items.filter((i) => i.removable);
+  const keep = d.items.filter((i) => !i.removable);
+
+  const h1 = document.createElement("p");
+  h1.className = "grp muted";
+  h1.textContent = "Will be staged";
+  body.append(h1);
+  const ul = document.createElement("ul");
+  for (const it of go) {
+    const li = document.createElement("li");
+    const p = document.createElement("span");
+    p.className = "p";
+    p.textContent = it.path;
+    const b = document.createElement("span");
+    b.textContent = human(Number(it.bytes));
+    li.append(p, b);
+    ul.append(li);
+  }
+  body.append(ul);
+
+  if (keep.length) {
+    const h2 = document.createElement("p");
+    h2.className = "grp muted";
+    h2.textContent = "Left alone";
+    body.append(h2);
+    const ul2 = document.createElement("ul");
+    for (const it of keep) {
+      const li = document.createElement("li");
+      li.className = "locked";
+      const p = document.createElement("span");
+      p.className = "p";
+      p.textContent = it.path;
+      const ev = document.createElement("span");
+      ev.className = "ev";
+      ev.textContent = it.why ?? "";
+      p.append(ev);
+      const b = document.createElement("span");
+      b.textContent = human(Number(it.bytes));
+      li.append(p, b);
+      ul2.append(li);
+    }
+    body.append(ul2);
+  }
+
+  $("sheet-go").onclick = async () => {
+    $("sheet-go").disabled = true;
+    $("sheet-go").textContent = "staging...";
+    try {
+      const r = await invoke("app_uninstall", { idx: d.app.idx });
+      $("sheet").hidden = true;
+      $("status").textContent =
+        `staged ${r.count} item(s), ${human(Number(r.bytes))} - undo from Staged, manifest ${r.manifest}`;
+      for (const [what, why] of r.unload_problems) {
+        console.warn(`${what}: ${why}`);
+      }
+      await paintPending();
+      await loadApps();
+      $("app-detail").replaceChildren();
+    } catch (e) {
+      $("sheet-sub").textContent = String(e);
+    }
+    $("sheet-go").disabled = false;
+    $("sheet-go").textContent = "Stage for removal";
+  };
+  $("sheet").hidden = false;
+}
+
+$("sheet-cancel").onclick = () => { $("sheet").hidden = true; };
+$("sheet").onclick = (e) => { if (e.target === $("sheet")) $("sheet").hidden = true; };
+
+// --- monitor --------------------------------------------------------------
+
+function paintEvents() {
+  $("mon-list").replaceChildren(...M.events.map((e) => {
+    const li = document.createElement("li");
+    const k = document.createElement("span");
+    k.className = "k";
+    k.textContent = e.kind;
+    const d = document.createElement("span");
+    d.className = `d${Number(e.bytes) > 0 ? " up" : ""}`;
+    const n = Number(e.bytes);
+    d.textContent = `${n < 0 ? "-" : "+"}${human(Math.abs(n))}`;
+    const p = document.createElement("span");
+    p.className = "p";
+    p.textContent = e.path;
+    li.append(k, d, p);
+    return li;
+  }));
+}
+
+async function tick() {
+  let batch = [];
+  try {
+    // The drain runs even while paused, so a burst cannot back up in the
+    // channel; pausing keeps nothing rather than deferring everything.
+    batch = await invoke("watch_poll");
+  } catch (e) {
+    $("mon-status").textContent = String(e);
+    return stopMonitor();
+  }
+  if (!batch.length) return;
+  M.seen += batch.length;
+  if (!M.paused) {
+    M.events.unshift(...batch.reverse());
+    if (M.events.length > M.cap) M.events.length = M.cap;
+    paintEvents();
+  }
+  $("mon-status").textContent = `${M.seen} event(s)${M.paused ? " - paused" : ""}`;
+}
+
+function stopMonitor() {
+  clearInterval(M.timer);
+  M.timer = 0;
+  invoke("watch_stop");
+  $("mon-start").textContent = "Start";
+  $("mon-pause").disabled = true;
+}
+
+$("mon-start").onclick = async () => {
+  if (M.timer) return stopMonitor();
+  const path = $("mon-path").value.trim() || $("path").value.trim();
+  if (!path) { $("mon-status").textContent = "give a path to watch"; return; }
+  try {
+    await invoke("watch_start", { path });
+  } catch (e) {
+    $("mon-status").textContent = String(e);
+    return;
+  }
+  M.seen = 0;
+  M.paused = false;
+  $("mon-pause").textContent = "Pause";
+  $("mon-pause").disabled = false;
+  $("mon-start").textContent = "Stop";
+  $("mon-status").textContent = `watching ${path}`;
+  // One render per drain, never one per event.
+  M.timer = setInterval(tick, 400);
+};
+
+$("mon-pause").onclick = () => {
+  M.paused = !M.paused;
+  $("mon-pause").textContent = M.paused ? "Resume" : "Pause";
+  $("mon-status").textContent = `${M.seen} event(s)${M.paused ? " - paused" : ""}`;
+};
+
+$("mon-clear").onclick = () => { M.events = []; paintEvents(); };
+
+setMode("storage");

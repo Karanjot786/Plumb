@@ -169,3 +169,90 @@ button.danger { color: #a8443a; }
 }
 #results-list .member { color: var(--muted); padding-left: 12px; font-size: 11px; }
 #results-list .shared { color: #a8734a; }
+
+/* ------------------------------------------------------------- stage 6 */
+
+#modes { display: flex; gap: 2px; flex: 0 0 auto; }
+#modes button {
+  font: inherit; font-size: 12px; padding: 5px 11px; cursor: pointer;
+  border: 1px solid transparent; border-radius: 6px;
+  background: none; color: var(--muted);
+}
+#modes button.on { background: var(--paper); color: var(--ink); border-color: var(--line); font-weight: 600; }
+
+#apps-panel, #mon-panel { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+
+#apps-head, #mon-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 16px; border-bottom: 1px solid var(--line);
+}
+#apps-head label { display: flex; align-items: center; gap: 5px; color: var(--muted); }
+#apps-head #apps-refresh { margin-left: auto; }
+#mon-head #mon-path { flex: 1; }
+#mon-head #mon-status { margin-left: auto; }
+
+#apps-body { flex: 1; display: grid; grid-template-columns: minmax(240px, 340px) 1fr; min-height: 0; }
+
+#apps-list { margin: 0; padding: 0; list-style: none; overflow: auto; border-right: 1px solid var(--line); }
+#apps-list li {
+  padding: 9px 14px; cursor: pointer; border-bottom: 1px solid var(--line);
+  display: flex; gap: 10px; align-items: baseline;
+}
+#apps-list li:hover { background: var(--card); }
+#apps-list li.on { background: var(--card); box-shadow: inset 3px 0 0 var(--accent); }
+#apps-list .an { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#apps-list .as { font-variant-numeric: tabular-nums; }
+#apps-list .al { display: block; font-size: 11px; color: var(--muted); font-weight: 400; }
+
+#app-detail { overflow: auto; padding: 18px 22px; }
+#app-detail .foot { display: flex; gap: 26px; margin: 6px 0 14px; align-items: flex-end; }
+#app-detail .foot .big { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
+#app-detail .split { flex: 1; max-width: 420px; }
+#app-detail .bar { display: flex; height: 9px; border-radius: 5px; overflow: hidden; background: var(--line); }
+#app-detail .bar i { display: block; height: 100%; }
+#app-detail .bar .b1 { background: var(--accent); }
+#app-detail .bar .b2 { background: #c9a888; }
+#app-detail .keys { display: flex; gap: 16px; font-size: 11px; color: var(--muted); margin-top: 5px; }
+#app-detail .keys i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; }
+
+#app-detail .grp { margin: 0 0 4px; }
+#app-detail ul { margin: 0 0 12px; padding: 0; list-style: none; }
+#app-detail li { display: flex; gap: 10px; padding: 4px 0; border-bottom: 1px solid var(--line); }
+#app-detail li .p { flex: 1; word-break: break-all; font-size: 11px; }
+#app-detail li .b { font-variant-numeric: tabular-nums; }
+#app-detail li .ev { display: block; color: var(--muted); font-size: 10px; }
+/* System-level and sibling-shared items. Shown, never actionable. */
+#app-detail li.locked { opacity: .55; }
+#app-detail li.locked .p { text-decoration: none; }
+
+#mon-list { flex: 1; margin: 0; padding: 0; list-style: none; overflow: auto; font-variant-numeric: tabular-nums; }
+#mon-list li { display: flex; gap: 12px; padding: 3px 16px; border-bottom: 1px solid var(--line); }
+#mon-list .k { width: 68px; color: var(--muted); font-size: 11px; }
+#mon-list .d { width: 88px; text-align: right; }
+#mon-list .d.up { color: var(--accent); }
+#mon-list .p { flex: 1; word-break: break-all; font-size: 11px; }
+
+#sheet {
+  position: fixed; inset: 0; background: rgba(30, 26, 20, .42);
+  display: flex; align-items: center; justify-content: center; z-index: 20;
+}
+#sheet-box {
+  background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+  width: min(620px, 88vw); max-height: 80vh; overflow: auto; padding: 20px 24px;
+}
+#sheet-body { margin: 12px 0; }
+#sheet-body ul { margin: 0 0 12px; padding: 0; list-style: none; }
+#sheet-body li { display: flex; gap: 10px; padding: 3px 0; border-bottom: 1px solid var(--line); }
+#sheet-body li .p { flex: 1; word-break: break-all; font-size: 11px; }
+#sheet-body li.locked { opacity: .55; }
+.sheet-actions { justify-content: flex-end; }
+
+/* The sheet is a decision point, so its heading is a title rather than the
+   small uppercase section label h2 carries elsewhere. */
+#sheet-box h2 {
+  font-size: 17px; text-transform: none; letter-spacing: 0;
+  color: var(--ink); margin-bottom: 4px;
+}
+/* Size column stays in one place whether or not a row carries an evidence
+   line under its path. */
+#app-detail li .b, #sheet-body li .b { min-width: 76px; text-align: right; align-self: flex-start; }

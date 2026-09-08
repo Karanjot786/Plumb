@@ -20,9 +20,23 @@ struct Loaded {
     elapsed_ms: u64,
 }
 
+/// Applications and their leftovers, computed once per `apps_list` call.
+///
+/// The frontend addresses an app by its index here rather than by path, so a
+/// detail or uninstall request can never name something the list did not
+/// produce.
+#[derive(Default)]
+struct AppsCache {
+    apps: Vec<storage_core::apps::App>,
+    contested: Vec<String>,
+    found: Vec<Vec<storage_core::apps::Associated>>,
+}
+
 #[derive(Default)]
 struct App {
     loaded: Mutex<Option<Loaded>>,
+    apps: Mutex<AppsCache>,
+    watch: Mutex<Option<Box<dyn storage_core::watch::Watcher + Send>>>,
 }
 
 fn now_secs() -> u32 {
@@ -709,6 +723,203 @@ fn dupes_dedupe(
     })
 }
 
+// ------------------------------------------------------------- stage 6
+
+#[derive(Serialize)]
+struct AppOut {
+    idx: usize,
+    name: String,
+    bundle_id: Option<String>,
+    version: Option<String>,
+    path: String,
+    /// The `.app` itself.
+    bundle_bytes: u64,
+    /// Everything else we can attribute to it, removable or not.
+    support_bytes: u64,
+    leftovers: usize,
+    /// Another installed app claims the same bundle id.
+    contested: bool,
+}
+
+#[derive(Serialize)]
+struct AssocOut {
+    path: String,
+    bytes: u64,
+    category: String,
+    evidence: String,
+    /// False for system-level paths and for a sibling's shared data. The UI
+    /// greys these and says why; they cannot reach a plan.
+    removable: bool,
+    why: Option<String>,
+}
+
+#[derive(Serialize)]
+struct AppDetail {
+    app: AppOut,
+    items: Vec<AssocOut>,
+    /// Background jobs that would be stopped before anything moved.
+    unload: Vec<String>,
+    stage_bytes: u64,
+    stage_count: usize,
+}
+
+fn app_out(
+    idx: usize,
+    a: &storage_core::apps::App,
+    found: &[storage_core::apps::Associated],
+    contested: &[String],
+) -> AppOut {
+    let bundle_bytes = found
+        .iter()
+        .filter(|i| i.category == storage_core::apps::Category::Bundle)
+        .map(|i| i.bytes)
+        .sum::<u64>()
+        .max(a.bundle_bytes);
+    let support_bytes = found
+        .iter()
+        .filter(|i| i.category != storage_core::apps::Category::Bundle)
+        .map(|i| i.bytes)
+        .sum();
+    AppOut {
+        idx,
+        name: a.name.clone(),
+        bundle_id: a.bundle_id.clone(),
+        version: a.version.clone(),
+        path: a.path.display().to_string(),
+        bundle_bytes,
+        support_bytes,
+        leftovers: found.iter().filter(|i| i.category != storage_core::apps::Category::Bundle).count(),
+        contested: a.bundle_id.as_ref().is_some_and(|id| contested.iter().any(|c| c == id)),
+    }
+}
+
+#[tauri::command]
+fn apps_list(guesses: bool, state: tauri::State<'_, App>) -> Result<Vec<AppOut>, String> {
+    use storage_core::apps::{self, LeftoverOpts};
+    let apps = apps::list_apps().map_err(|e| e.to_string())?;
+    let contested = apps::contested_ids(&apps);
+    let opts = LeftoverOpts { include_name_matches: guesses };
+    let found: Vec<Vec<apps::Associated>> =
+        apps.iter().map(|a| apps::associated_for(a, &contested, opts)).collect();
+
+    let out = apps
+        .iter()
+        .enumerate()
+        .map(|(i, a)| app_out(i, a, &found[i], &contested))
+        .collect();
+    *state.apps.lock().unwrap() = AppsCache { apps, contested, found };
+    Ok(out)
+}
+
+#[tauri::command]
+fn app_detail(idx: usize, state: tauri::State<'_, App>) -> Result<AppDetail, String> {
+    use storage_core::apps;
+    let cache = state.apps.lock().unwrap();
+    let a = cache.apps.get(idx).ok_or("no such application")?;
+    let found = &cache.found[idx];
+
+    let items = found
+        .iter()
+        .map(|i| {
+            let why = apps::exclusion_reason(i);
+            AssocOut {
+                path: i.path.display().to_string(),
+                bytes: i.bytes,
+                category: i.category.label().to_string(),
+                evidence: i.evidence.label().to_string(),
+                removable: why.is_none(),
+                why: why.map(|w| w.to_string()),
+            }
+        })
+        .collect();
+
+    // The plan is built here only to report what it would do. It moves nothing.
+    let plan = apps::uninstall_plan(a, &cache.contested, Default::default());
+    Ok(AppDetail {
+        app: app_out(idx, a, found, &cache.contested),
+        items,
+        unload: plan.unload.iter().map(|u| u.label()).collect(),
+        stage_bytes: plan.bytes,
+        stage_count: plan.items.len(),
+    })
+}
+
+#[derive(Serialize)]
+struct UninstallOut {
+    manifest: u64,
+    count: usize,
+    bytes: u64,
+    /// Helpers that would not stop. Reported, never fatal: one that was not
+    /// running is the ordinary case.
+    unload_problems: Vec<(String, String)>,
+}
+
+/// Stop the app's background jobs, then route every path through staging.
+/// Nothing is deleted; `cleanup_commit` remains the only thing that removes.
+#[tauri::command]
+fn app_uninstall(idx: usize, state: tauri::State<'_, App>) -> Result<UninstallOut, String> {
+    use storage_core::apps;
+    // Build the plan and release the cache before doing any work, so the app
+    // list stays readable while a long stage runs.
+    let plan = {
+        let cache = state.apps.lock().unwrap();
+        let a = cache.apps.get(idx).ok_or("no such application")?;
+        apps::uninstall_plan(a, &cache.contested, Default::default())
+    };
+    if plan.is_empty() {
+        return Err("nothing to stage".into());
+    }
+    let unload_problems = apps::perform_unload(&plan);
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+    let label = format!("uninstall {}", plan.app);
+    let m = apps::stage_uninstall(&plan, threads, &label).map_err(|e| e.to_string())?;
+    Ok(UninstallOut {
+        manifest: m.id,
+        count: m.items.len(),
+        bytes: m.total_bytes,
+        unload_problems,
+    })
+}
+
+#[derive(Serialize)]
+struct EventOut {
+    path: String,
+    kind: &'static str,
+    bytes: i64,
+    at: u64,
+}
+
+#[tauri::command]
+fn watch_start(path: String, state: tauri::State<'_, App>) -> Result<(), String> {
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+    let w = storage_core::watch::watcher(Path::new(&path), threads).map_err(|e| e.to_string())?;
+    *state.watch.lock().unwrap() = Some(w);
+    Ok(())
+}
+
+#[tauri::command]
+fn watch_stop(state: tauri::State<'_, App>) {
+    *state.watch.lock().unwrap() = None;
+}
+
+/// One drain, already coalesced to at most one entry per path. The frontend
+/// renders per drain, never per event.
+#[tauri::command]
+fn watch_poll(state: tauri::State<'_, App>) -> Result<Vec<EventOut>, String> {
+    let mut guard = state.watch.lock().unwrap();
+    let Some(w) = guard.as_mut() else { return Ok(Vec::new()) };
+    let evs = w.events().map_err(|e| e.to_string())?;
+    Ok(evs
+        .into_iter()
+        .map(|e| EventOut {
+            path: e.path.display().to_string(),
+            kind: e.kind.label(),
+            bytes: e.bytes,
+            at: e.at,
+        })
+        .collect())
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -729,7 +940,13 @@ fn main() {
             snapshot_list,
             snapshot_diff,
             dupes_find,
-            dupes_dedupe
+            dupes_dedupe,
+            apps_list,
+            app_detail,
+            app_uninstall,
+            watch_start,
+            watch_stop,
+            watch_poll
         ])
         .run(tauri::generate_context!())
         .expect("failed to start window");

@@ -276,7 +276,7 @@ impl Watcher for Poll {
 
 /// The right watcher for this machine: native where it exists and starts,
 /// polling everywhere else.
-pub fn watcher(root: &Path, threads: usize) -> io::Result<Box<dyn Watcher>> {
+pub fn watcher(root: &Path, threads: usize) -> io::Result<Box<dyn Watcher + Send>> {
     #[cfg(any(target_os = "macos", windows))]
     if let Ok(n) = Native::new(root) {
         return Ok(Box::new(n));

@@ -7,6 +7,11 @@
 </head>
 <body>
 <header id="topbar">
+  <nav id="modes">
+    <button class="on" data-mode="storage">Storage</button>
+    <button data-mode="apps">Applications</button>
+    <button data-mode="monitor">Monitor</button>
+  </nav>
   <nav id="crumbs"></nav>
   <input id="filter" type="search" placeholder="filter by name" spellcheck="false" />
 </header>
@@ -132,6 +137,32 @@
         <ul id="results-list"></ul>
       </div>
     </div>
+
+    <div id="apps-panel" hidden>
+      <div id="apps-head">
+        <strong id="apps-count">Applications</strong>
+        <label class="tiny"><input id="apps-guesses" type="checkbox" />
+          possible leftovers (name matches - guesses, not proof)</label>
+        <button id="apps-refresh">Rescan</button>
+      </div>
+      <div id="apps-body">
+        <ul id="apps-list"></ul>
+        <div id="app-detail">
+          <p class="muted">Pick an application.</p>
+        </div>
+      </div>
+    </div>
+
+    <div id="mon-panel" hidden>
+      <div id="mon-head">
+        <input id="mon-path" type="text" placeholder="/path/to/watch" spellcheck="false" />
+        <button id="mon-start">Start</button>
+        <button id="mon-pause" disabled>Pause</button>
+        <button id="mon-clear">Clear</button>
+        <span id="mon-status" class="muted"></span>
+      </div>
+      <ul id="mon-list"></ul>
+    </div>
   </section>
 
   <aside id="inspector">
@@ -149,6 +180,19 @@
     </div>
   </aside>
 </main>
+
+<div id="sheet" hidden>
+  <div id="sheet-box">
+    <h2 id="sheet-title"></h2>
+    <p id="sheet-sub" class="muted"></p>
+    <div id="sheet-body"></div>
+    <div class="row sheet-actions">
+      <button id="sheet-cancel">Cancel</button>
+      <button id="sheet-go" class="danger">Stage for removal</button>
+    </div>
+    <p class="muted tiny">Staging moves files into an app-owned folder. Nothing is deleted until you commit, and Undo puts everything back in one step.</p>
+  </div>
+</div>
 
 <script src="app.js"></script>
 </body>
