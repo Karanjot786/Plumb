@@ -67,7 +67,11 @@ jobs:
           - os: macos-14
             target: aarch64-apple-darwin
             label: macos-arm64
-          - os: macos-13
+          # macos-13 was retired on 2025-12-04. The label still parses, so a
+          # job asking for it queues forever instead of failing. macos-15-intel
+          # is the replacement and the last x86_64 image Actions will offer,
+          # available until August 2027.
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             label: macos-x86_64
           - os: ubuntu-latest
