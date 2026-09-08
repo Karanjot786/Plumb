@@ -110,3 +110,43 @@ jobs:
           cargo run -q -p storage-cli -- restore $id
           if (-not (Test-Path "$F\junk\x.bin")) { Write-Error "FAIL: restore did not put it back" }
           Write-Host "staging round-trip ok (manifest $id)"
+
+      # Stage 4's Linux half (rustix::fs::RawDir) is premised on the current
+      # scanner being too slow. Nobody has measured it. 50k small files across
+      # 500 directories is metadata-bound - the shape RawDir would help. A few
+      # large files would not exercise it at all.
+      - name: scan throughput
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          B="$RUNNER_TEMP/bench"
+          for d in $(seq 1 500); do
+            mkdir -p "$B/d$d"
+            for f in $(seq 1 100); do echo x > "$B/d$d/f$f"; done
+          done
+          echo "files: $(find "$B" -type f | wc -l)"
+          cargo build -q -p storage-cli --release --locked
+          for i in 1 2 3; do
+            ./target/release/sv scan "$B" | grep -E "scan time|contents"
+          done
+
+  # The rasterize-in-Rust-and-blit-once architecture was chosen *because*
+  # WebKitGTK runs Canvas 2D at ~5 FPS and its WebGL is broken. That premise
+  # has never been tested, because the GUI has never been built on Linux. The
+  # apt list this job settles on is also exactly what Tranche 4's .deb declares.
+  gui-linux:
+    name: gui (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: webkit2gtk and tauri build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf libsoup-3.0-dev
+      - name: build the app
+        run: cargo build -p storage-ui --locked
