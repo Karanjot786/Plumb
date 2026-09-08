@@ -12,6 +12,10 @@
 </p>
 
 <p align="center">
+  <a href="https://plumb.karanjot.co.in"><b>plumb.karanjot.co.in</b></a>
+</p>
+
+<p align="center">
   <img src="assets/banner.png" alt="A folder reporting 460 GB while using 33. Seven blocks in a hundred are real." width="900">
 </p>
 
@@ -42,7 +46,8 @@ Version 0.1.0. Binaries are unsigned. Read the note below before your first laun
 | Linux, x86_64 | [.deb](https://github.com/Karanjot786/Plumb/releases/download/v0.1.0/Plumb_0.1.0_amd64.deb) or [.AppImage](https://github.com/Karanjot786/Plumb/releases/download/v0.1.0/Plumb_0.1.0_amd64.AppImage) | [tar.gz](https://github.com/Karanjot786/Plumb/releases/download/v0.1.0/plumb-v0.1.0-linux-x86_64.tar.gz) |
 | Windows | build from source | build from source |
 
-Every release lives on the [releases page](https://github.com/Karanjot786/Plumb/releases).
+The same downloads sit on [plumb.karanjot.co.in](https://plumb.karanjot.co.in), and every
+release lives on the [releases page](https://github.com/Karanjot786/Plumb/releases).
 
 Plumb carries no Apple Developer signature. Notarization costs $99 a year and this project
 has none. macOS blocks the first launch. Right-click the app, choose Open, then Open again
