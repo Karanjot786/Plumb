@@ -132,6 +132,8 @@ pub struct Associated {
 pub trait AppProvider {
     fn list(&self) -> io::Result<Vec<App>>;
     fn associated(&self, app: &App) -> io::Result<Vec<Associated>>;
+    /// What an uninstall would do. Builds nothing on disk.
+    fn uninstall_plan(&self, app: &App) -> io::Result<CleanupPlan>;
 }
 
 // ------------------------------------------------------------- validation
@@ -733,4 +735,188 @@ impl AppProvider for Local {
     fn associated(&self, app: &App) -> io::Result<Vec<Associated>> {
         Ok(associated_for(app, &self.contested, self.opts))
     }
+
+    fn uninstall_plan(&self, app: &App) -> io::Result<CleanupPlan> {
+        Ok(uninstall_plan(app, &self.contested, self.opts))
+    }
+}
+
+// ------------------------------------------------------------- uninstall
+
+/// A background job that must stop before its files move.
+///
+/// A login item or launch agent that is still running will happily recreate
+/// the directories we just staged, so the user ends up with a half-uninstalled
+/// app and no error to explain it.
+#[derive(Clone, Debug)]
+pub enum Unload {
+    /// A login item helper inside the bundle, addressed by its own bundle id.
+    LoginItem(String),
+    /// A launch agent plist in the user's `LaunchAgents`.
+    Agent(PathBuf),
+}
+
+impl Unload {
+    pub fn label(&self) -> String {
+        match self {
+            Unload::LoginItem(id) => format!("login item {id}"),
+            Unload::Agent(p) => format!("launch agent {}", p.display()),
+        }
+    }
+}
+
+/// Everything an uninstall would do, before any of it is done.
+///
+/// `items` is `Vec<Removable>` and there is no other way in, so a system path
+/// or a sibling's shared data cannot appear here. `excluded` carries the rest
+/// so the review sheet can show the whole footprint and say what was spared.
+pub struct CleanupPlan {
+    pub app: String,
+    pub bundle_id: Option<String>,
+    pub items: Vec<Removable>,
+    pub excluded: Vec<(PathBuf, &'static str)>,
+    pub unload: Vec<Unload>,
+    pub bytes: u64,
+}
+
+impl CleanupPlan {
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+}
+
+/// Login item helpers shipped inside a bundle.
+#[cfg(target_os = "macos")]
+fn login_items(bundle: &Path) -> Vec<String> {
+    let dir = bundle.join("Contents/Library/LoginItems");
+    let Ok(rd) = std::fs::read_dir(&dir) else { return Vec::new() };
+    let mut out = Vec::new();
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.extension().is_none_or(|x| x != "app") {
+            continue;
+        }
+        let info = p.join("Contents/Info.plist");
+        let Ok(v) = plist::Value::from_file(&info) else { continue };
+        let Some(d) = v.into_dictionary() else { continue };
+        let Some(id) = d.get("CFBundleIdentifier").and_then(|x| x.as_string()) else { continue };
+        // Same gate as everywhere else: this id becomes a launchctl argument.
+        if valid_bundle_id(id) {
+            out.push(id.to_string());
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+#[cfg(not(target_os = "macos"))]
+fn login_items(_bundle: &Path) -> Vec<String> {
+    Vec::new()
+}
+
+/// Build the plan. Touches nothing.
+pub fn uninstall_plan(app: &App, contested: &[String], opts: LeftoverOpts) -> CleanupPlan {
+    let found = associated_for(app, contested, opts);
+    let items = stageable(&found);
+    let excluded: Vec<(PathBuf, &'static str)> = found
+        .iter()
+        .filter_map(|a| exclusion_reason(a).map(|why| (a.path.clone(), why)))
+        .collect();
+
+    let mut unload: Vec<Unload> =
+        login_items(&app.path).into_iter().map(Unload::LoginItem).collect();
+    for r in &items {
+        if r.item().category == Category::LaunchAgent {
+            unload.push(Unload::Agent(r.path().to_path_buf()));
+        }
+    }
+
+    let bytes = items.iter().map(|r| r.item().bytes).sum();
+    debug_assert!(
+        items.iter().all(|r| !is_system_path(r.path())),
+        "a system path reached a CleanupPlan"
+    );
+    CleanupPlan {
+        app: app.name.clone(),
+        bundle_id: app.bundle_id.clone(),
+        items,
+        excluded,
+        unload,
+        bytes,
+    }
+}
+
+/// Stop the app's background jobs so nothing recreates its files mid-move.
+///
+/// Call only after the user has confirmed the uninstall. Every failure is
+/// returned rather than raised: a helper that was not running is the common
+/// case and is not an error, and a helper that will not stop is worth telling
+/// the user about without abandoning the uninstall.
+#[cfg(target_os = "macos")]
+pub fn perform_unload(plan: &CleanupPlan) -> Vec<(String, String)> {
+    let uid = unsafe { libc::getuid() };
+    let mut problems = Vec::new();
+    for u in &plan.unload {
+        let out = match u {
+            Unload::LoginItem(id) => {
+                debug_assert!(valid_bundle_id(id), "unvalidated id reached launchctl");
+                std::process::Command::new("launchctl")
+                    .arg("bootout")
+                    .arg(format!("gui/{uid}/{id}"))
+                    .output()
+            }
+            Unload::Agent(path) => {
+                std::process::Command::new("launchctl").arg("unload").arg(path).output()
+            }
+        };
+        match out {
+            Ok(o) if o.status.success() => {}
+            Ok(o) => {
+                let msg = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                problems.push((u.label(), if msg.is_empty() { "not loaded".into() } else { msg }));
+            }
+            Err(e) => problems.push((u.label(), e.to_string())),
+        }
+    }
+    problems
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn perform_unload(_plan: &CleanupPlan) -> Vec<(String, String)> {
+    Vec::new()
+}
+
+/// Turn the plan into one staging manifest, so one `restore` undoes the whole
+/// uninstall.
+///
+/// Every path goes through `clean::plan` and `clean::stage`, which is the only
+/// code allowed to move a user's files and the only path with an undo manifest
+/// behind it. Nothing here removes anything.
+pub fn stage_uninstall(
+    plan: &CleanupPlan,
+    threads: usize,
+    label: &str,
+) -> io::Result<crate::Manifest> {
+    let mut all: Option<crate::Plan> = None;
+    for r in &plan.items {
+        let root = crate::blocklist::canon_keep_link(r.path());
+        // Scanning each item separately keeps the aggregate honest for a
+        // directory and costs nothing for a plist.
+        let mut tree = crate::scan(&root, threads.max(1), |_| {})?;
+        let private = crate::scan::private_sizes(&tree, &root);
+        crate::aggregate::aggregate_with_private(&mut tree, &private);
+        if tree.is_empty() {
+            continue;
+        }
+        let one = crate::clean::plan(&tree, &root, &[0]);
+        match &mut all {
+            Some(a) => a.absorb(one),
+            None => all = Some(one),
+        }
+    }
+    let Some(all) = all else {
+        return Err(io::Error::new(io::ErrorKind::NotFound, "nothing to stage"));
+    };
+    crate::clean::stage(&all, label)
 }

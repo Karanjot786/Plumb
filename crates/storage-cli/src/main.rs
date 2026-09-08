@@ -53,6 +53,15 @@ enum Cmd {
         /// Include name-keyed matches. These are guesses, not proof.
         #[arg(long)] guesses: bool,
     },
+    /// Review, and with --yes stage, an application and everything it left behind.
+    Uninstall {
+        /// Name or bundle id substring. Must select exactly one application.
+        app: String,
+        /// Actually stage. Without it this prints the review and touches nothing.
+        #[arg(long)] yes: bool,
+        /// Include name-keyed matches. These are guesses, not proof.
+        #[arg(long)] guesses: bool,
+    },
     /// Find byte-identical files and report what deleting them would free.
     Dupes {
         path: PathBuf,
@@ -326,6 +335,9 @@ fn main() -> std::io::Result<()> {
                 println!("  {} bundle id(s) claimed by more than one app", contested.len());
             }
         }
+        Cmd::Uninstall { app, yes, guesses } => {
+            return uninstall(app, *yes, *guesses, cli.threads);
+        }
         Cmd::Dupes { path, min_size, limit, dedupe, dry_run } => {
             let t = load(path, cli.threads)?;
             let root = storage_core::blocklist::canon_keep_link(path);
@@ -516,5 +528,84 @@ fn show_leftovers(
             println!("            {}{}", i.evidence.label(), why.map(|w| format!("; {w}")).unwrap_or_default());
         }
     }
+    Ok(())
+}
+
+/// Review an uninstall, and with `--yes` route it through staging.
+///
+/// Nothing is deleted here or anywhere downstream: staging is a rename into
+/// an app-owned directory that `sv restore` reverses and only `sv commit`
+/// makes permanent.
+fn uninstall(needle: &str, yes: bool, guesses: bool, threads: usize) -> std::io::Result<()> {
+    use storage_core::apps::{self, AppProvider, LeftoverOpts};
+
+    let mut local = apps::Local::new()?;
+    local.opts = LeftoverOpts { include_name_matches: guesses };
+    let n = needle.to_lowercase();
+    let all = local.list()?;
+    let picked: Vec<&apps::App> = all
+        .iter()
+        .filter(|a| {
+            a.name.to_lowercase().contains(&n)
+                || a.bundle_id.as_deref().unwrap_or("").to_lowercase().contains(&n)
+        })
+        .collect();
+
+    match picked.len() {
+        0 => {
+            println!("no application matched {needle:?}");
+            return Ok(());
+        }
+        1 => {}
+        _ => {
+            println!("{needle:?} matched {} applications; name one exactly:", picked.len());
+            for a in picked {
+                println!("  {:<34} {}", a.name, a.bundle_id.as_deref().unwrap_or("-"));
+            }
+            return Ok(());
+        }
+    }
+
+    let plan = local.uninstall_plan(picked[0])?;
+    println!("Uninstall {}  [{}]", plan.app, plan.bundle_id.as_deref().unwrap_or("no bundle id"));
+    println!("\n  will be staged - {} in {} item(s)", human(plan.bytes), plan.items.len());
+    for r in &plan.items {
+        println!("    {:>10}  {:<24} {}", human(r.item().bytes), r.item().category.label(), r.path().display());
+    }
+    if !plan.excluded.is_empty() {
+        println!("\n  left alone - {} item(s)", plan.excluded.len());
+        for (path, why) in &plan.excluded {
+            println!("    {}\n      {why}", path.display());
+        }
+    }
+    if !plan.unload.is_empty() {
+        println!("\n  will be stopped first - {} job(s)", plan.unload.len());
+        for u in &plan.unload {
+            println!("    {}", u.label());
+        }
+    }
+
+    if !yes {
+        println!("\n  review only: nothing was moved. Re-run with --yes to stage.");
+        return Ok(());
+    }
+    if plan.is_empty() {
+        println!("\n  nothing to stage");
+        return Ok(());
+    }
+
+    // Stop the background jobs before anything moves, so a running helper
+    // cannot recreate what we just staged.
+    for (label, why) in storage_core::apps::perform_unload(&plan) {
+        println!("  {label}: {why}");
+    }
+
+    let m = storage_core::apps::stage_uninstall(&plan, threads, &format!("uninstall {}", plan.app))?;
+    println!("\n  staged {} items, {} -> manifest {}", m.items.len(), human(m.total_bytes), m.id);
+    let skipped = plan.items.len() - m.items.len();
+    if skipped > 0 {
+        println!("  {skipped} skipped: changed between planning and staging");
+    }
+    println!("  undo with: sv restore {}", m.id);
     Ok(())
 }
