@@ -198,3 +198,83 @@ fn check_sibling_order(t: &Tree) {
     }
     let _ = t;
 }
+
+// ---------------------------------------------------- APFS private size
+
+/// `ATTR_CMNEXT_PRIVATESIZE`: per `getattrlist(2)`, "the number of bytes that
+/// are not trapped inside a clone or snapshot, and which would be freed
+/// immediately if the file were deleted".
+///
+/// This is the kernel's own answer to a hole in `clone_id` accounting: writing
+/// one byte to an APFS clone gives the file a brand-new `clone_id` while
+/// almost all of its extents stay shared, so clone-family logic counts it fully
+/// reclaimable when it is not. It also catches files with no clone at all that
+/// are pinned by a Time Machine local snapshot, which report zero.
+///
+/// It is queried per file rather than added to the bulk request, because the
+/// `getattrlistbulk` attribute set belongs to `dua-core`, which requests only
+/// CLONEID and EXT_FLAGS and exposes no private size. Forking a pinned
+/// dependency to add one attribute costs more than this pass does.
+#[cfg(target_os = "macos")]
+const ATTR_CMNEXT_PRIVATESIZE: libc::attrgroup_t = 0x0000_0008;
+
+/// getattrlist packs attribute data immediately after the u32 length with no
+/// alignment padding, so the off_t starts at byte 4 and a `repr(C)` struct
+/// would read it from byte 8. Parsed from raw bytes for that reason.
+#[cfg(target_os = "macos")]
+const PRIVATE_SIZE_BUF: usize = 4 + 8;
+
+/// `None` when the filesystem does not answer, which is the signal to keep the
+/// `clone_id` estimate rather than substitute a zero.
+#[cfg(target_os = "macos")]
+fn private_size(path: &Path) -> Option<u64> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    let c = CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut al: libc::attrlist = unsafe { std::mem::zeroed() };
+    al.bitmapcount = libc::ATTR_BIT_MAP_COUNT;
+    // CMNEXT attributes travel in forkattr and need the extended opt-in.
+    al.forkattr = ATTR_CMNEXT_PRIVATESIZE;
+    let mut buf = [0u8; PRIVATE_SIZE_BUF];
+    let rc = unsafe {
+        libc::getattrlist(
+            c.as_ptr(),
+            &mut al as *mut _ as *mut libc::c_void,
+            buf.as_mut_ptr() as *mut libc::c_void,
+            buf.len(),
+            libc::FSOPT_ATTR_CMN_EXTENDED | libc::FSOPT_NOFOLLOW,
+        )
+    };
+    if rc != 0 {
+        return None;
+    }
+    let length = u32::from_ne_bytes(buf[0..4].try_into().ok()?) as usize;
+    if length < PRIVATE_SIZE_BUF {
+        return None;
+    }
+    let v = i64::from_ne_bytes(buf[4..12].try_into().ok()?);
+    Some(v.max(0) as u64)
+}
+
+/// Per-file freeable, straight from the kernel. This is the honest answer to
+/// "what does deleting *this file* return to the filesystem", and it is what
+/// the Applications view and the inspector should show for a single file.
+///
+/// It is deliberately NOT summed into `sub_excl`. `PRIVATESIZE` measures bytes
+/// not shared with *anything*, so for two clones sitting inside one directory
+/// each reports ~0 while `rm -rf` on that directory would still return the
+/// whole extent. Summing them under-reported a 200 MB fixture as 32 KB.
+/// Directory totals need the shared bytes credited once at the lowest common
+/// ancestor, which is `aggregate`'s family attribution -- see the note in the
+/// Stage 6 report.
+#[cfg(target_os = "macos")]
+pub fn freeable_of(path: &Path) -> Option<u64> {
+    private_size(path)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn freeable_of(_path: &Path) -> Option<u64> {
+    None
+}
+
+
