@@ -1,0 +1,16 @@
+[workspace]
+members = ["crates/storage-core", "crates/storage-cli"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.93"
+
+[workspace.dependencies]
+dua-core = "=4.0.0"
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
