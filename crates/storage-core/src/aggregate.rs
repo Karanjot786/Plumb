@@ -84,10 +84,20 @@ pub fn aggregate_with_private(t: &mut Tree, private: &[Option<u64>]) {
         let shared = t.flags[i].has(Flags::SHARED);
         t.sub_logical[i] += t.logical[i];
         t.sub_blocks[i] += t.blocks[i];
-        let own = match private.get(i).copied().flatten() {
-            Some(p) => p,
-            None if shared => 0,
-            None => t.blocks[i],
+        // A node in a detected family contributes nothing of its own: the
+        // family's blocks are credited exactly once at its LCA. PRIVATESIZE
+        // must not be consulted here. It answers a clone question, not a link
+        // question, and for a hardlink it reports the *whole* file - so
+        // trusting it counted those bytes once per link on top of the LCA
+        // credit, and `freeable` came out above `allocated`.
+        //
+        // Where no family was detected, PRIVATESIZE is exactly what we want:
+        // it is the diverged-clone case, extents shared with a partner the
+        // kernel will not name, and it reports less than `blocks`.
+        let own = if shared {
+            0
+        } else {
+            private.get(i).copied().flatten().unwrap_or(t.blocks[i])
         };
         t.sub_excl[i] += own;
         t.sub_excl[i] += credit_at[i];
