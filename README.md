@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/treemap.png" alt="A treemap of a scanned folder, sized by reclaimable bytes" width="860">
+  <img src="assets/banner.png" alt="A folder reporting 460 GB while using 33. Seven blocks in a hundred are real." width="900">
 </p>
 
 Every disk analyzer adds up the size each file claims. Filesystems stopped storing files
@@ -77,8 +77,9 @@ instead of drawing DOM or Canvas 2D primitives. A tree of a quarter million node
 interactive, and the frontend behaves the same on WebKitGTK as on WKWebView.
 
 <p align="center">
-  <img src="assets/sunburst.png" alt="Sunburst view" width="420">
-  <img src="assets/agemap.png" alt="Age map view" width="420">
+  <img src="assets/treemap.png" alt="Treemap view" width="280">
+  <img src="assets/sunburst.png" alt="Sunburst view" width="280">
+  <img src="assets/agemap.png" alt="Age map view" width="280">
 </p>
 
 | View | Use |
