@@ -1,4 +1,5 @@
 pub mod aggregate;
+pub mod apps;
 pub mod arena;
 pub mod blocklist;
 pub mod clean;

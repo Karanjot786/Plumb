@@ -23,6 +23,9 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 blake3 = "1"
 rayon = "1"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+plist = "1"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

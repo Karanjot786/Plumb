@@ -43,6 +43,10 @@ enum Cmd {
     Restore { id: u64 },
     /// Permanently remove everything in a manifest.
     Commit { id: u64 },
+    /// List installed applications.
+    Apps {
+        #[arg(long, default_value_t = 30)] limit: usize,
+    },
     /// Find byte-identical files and report what deleting them would free.
     Dupes {
         path: PathBuf,
@@ -287,6 +291,31 @@ fn main() -> std::io::Result<()> {
                 println!("  {} item(s) left staged; the manifest still lists them", r.skipped.len());
             }
             println!("  entries sharing blocks with another path free less than their listed size");
+        }
+        Cmd::Apps { limit } => {
+            let apps = storage_core::apps::list_apps()?;
+            if apps.is_empty() {
+                println!("no applications found");
+                return Ok(());
+            }
+            let contested = storage_core::apps::contested_ids(&apps);
+            let mut sized: Vec<(u64, &storage_core::apps::App)> = apps
+                .iter()
+                .map(|a| (storage_core::apps::dir_bytes(&a.path), a))
+                .collect();
+            sized.sort_by_key(|(b, _)| std::cmp::Reverse(*b));
+            for (bytes, a) in sized.iter().take(*limit) {
+                let id = a.bundle_id.as_deref().unwrap_or("(no bundle id)");
+                let shared = if contested.contains(&id.to_string()) { "  [id shared]" } else { "" };
+                println!("{:>10}  {:<34} {}{}", human(*bytes), a.name, id, shared);
+                if let Some(v) = &a.version {
+                    println!("            v{v}  {}", a.path.display());
+                }
+            }
+            println!("\n  {} application(s)", apps.len());
+            if !contested.is_empty() {
+                println!("  {} bundle id(s) claimed by more than one app", contested.len());
+            }
         }
         Cmd::Dupes { path, min_size, limit, dedupe, dry_run } => {
             let t = load(path, cli.threads)?;

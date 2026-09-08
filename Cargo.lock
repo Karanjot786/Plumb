@@ -3287,6 +3287,7 @@ dependencies = [
  "dua-core",
  "libc",
  "memmap2",
+ "plist",
  "rayon",
  "rkyv",
  "serde",
