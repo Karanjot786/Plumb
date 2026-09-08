@@ -231,8 +231,9 @@ async function draw() {
   const px = new Uint8ClampedArray(u8.buffer, u8.byteOffset + off, pw * ph * 4);
   ictx.putImageData(new ImageData(px, pw, ph), 0, 0);
   S.hover = -1;
+  // paintOverlay() clears the overlay itself, so it must come last here -
+  // a trailing clearRect would wipe the selection outline it just drew.
   paintOverlay();
-  octx.clearRect(0, 0, pw, ph);
 }
 
 // -------------------------------------------------------------- hit testing
