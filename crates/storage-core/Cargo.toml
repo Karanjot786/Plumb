@@ -25,9 +25,16 @@ rayon = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 plist = "1"
+# FSEvents. Deliberately not enabled on Linux: notify's backend there is
+# inotify, which needs one watch per directory and blows past
+# max_user_watches on a 240k-directory tree. Linux polls and diffs instead.
+notify = "8"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
+# ReadDirectoryChangesW, which is what notify's Windows backend is.
+notify = "8"
+

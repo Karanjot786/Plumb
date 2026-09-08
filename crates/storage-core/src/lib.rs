@@ -12,6 +12,7 @@ pub mod rules;
 pub mod scan;
 pub mod snapshot;
 pub mod volume;
+pub mod watch;
 
 pub use aggregate::aggregate;
 pub use clean::{

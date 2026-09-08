@@ -72,6 +72,19 @@ enum Cmd {
         /// With --dedupe, run every check and change nothing.
         #[arg(long)] dry_run: bool,
     },
+    /// Follow a directory and report what changes under it.
+    Watch {
+        path: PathBuf,
+        /// Stop after this long. 0 runs until interrupted.
+        #[arg(long, default_value_t = 0)] seconds: u64,
+        /// Milliseconds between drains.
+        #[arg(long, default_value_t = 250)] tick: u64,
+        /// Force rescan-and-diff instead of the native backend. This is what
+        /// Linux always does, and it is the only way to exercise it here.
+        #[arg(long)] poll: bool,
+        /// Seconds between rescans, with --poll.
+        #[arg(long, default_value_t = 30)] every: u64,
+    },
     /// Save, list and compare snapshots of a scanned tree.
     Snapshot {
         #[command(subcommand)]
@@ -334,6 +347,9 @@ fn main() -> std::io::Result<()> {
             if !contested.is_empty() {
                 println!("  {} bundle id(s) claimed by more than one app", contested.len());
             }
+        }
+        Cmd::Watch { path, seconds, tick, poll, every } => {
+            return watch(path, *seconds, *tick, *poll, *every);
         }
         Cmd::Uninstall { app, yes, guesses } => {
             return uninstall(app, *yes, *guesses, cli.threads);
@@ -607,5 +623,74 @@ fn uninstall(needle: &str, yes: bool, guesses: bool, threads: usize) -> std::io:
         println!("  {skipped} skipped: changed between planning and staging");
     }
     println!("  undo with: sv restore {}", m.id);
+    Ok(())
+}
+
+/// Follow a directory. Prints one line per coalesced event, never one per raw
+/// event, which is the difference between usable and unusable during a build.
+fn watch(path: &PathBuf, seconds: u64, tick: u64, poll: bool, every: u64) -> std::io::Result<()> {
+    use storage_core::watch::{watcher, Feed, Poll, Watcher};
+
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+    let mut w: Box<dyn Watcher> = if poll {
+        let interval = std::time::Duration::from_secs(every.max(1));
+        println!("rescan-and-diff every {}s", interval.as_secs());
+        Box::new(Poll::new(path, threads, interval)?)
+    } else {
+        watcher(path, threads)?
+    };
+    let mut feed = Feed::new(500);
+    println!("watching {} - ctrl-c to stop", path.display());
+
+    let start = std::time::Instant::now();
+    let tick = std::time::Duration::from_millis(tick.max(10));
+    let mut printed = 0usize;
+    let mut worst = std::time::Duration::ZERO;
+    loop {
+        if seconds > 0 && start.elapsed().as_secs() >= seconds {
+            break;
+        }
+        let t0 = std::time::Instant::now();
+        let batch = w.events()?;
+        let n = batch.len();
+        feed.absorb(batch);
+        let drain = t0.elapsed();
+        if drain > worst {
+            worst = drain;
+        }
+        if n > 0 {
+            // Oldest first, so the log reads in the order things happened.
+            let fresh: Vec<String> = feed
+                .events()
+                .take(n)
+                .map(|e| {
+                    let d = e.bytes;
+                    let sign = if d < 0 { "-" } else { "+" };
+                    format!(
+                        "  {:<9} {sign}{:>10}  {}",
+                        e.kind.label(),
+                        human(d.unsigned_abs()),
+                        e.path.display()
+                    )
+                })
+                .collect();
+            for line in fresh.iter().rev() {
+                println!("{line}");
+            }
+            printed += n;
+            println!(
+                "  -- {n} path(s) this drain in {:.1}ms, {} raw event(s) so far, {} stale dir(s)",
+                drain.as_secs_f64() * 1000.0,
+                feed.seen,
+                feed.stale().len()
+            );
+        }
+        std::thread::sleep(tick);
+    }
+    println!(
+        "\n  {printed} coalesced event(s) from {} raw; worst drain {:.1}ms",
+        feed.seen,
+        worst.as_secs_f64() * 1000.0
+    );
     Ok(())
 }
