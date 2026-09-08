@@ -240,7 +240,12 @@ fn assert_in_staging(p: &Path) -> io::Result<()> {
     for c in p.components() {
         acc.push(c);
         if c.as_os_str() == ".sv-staging" {
-            let ok = acc.is_dir()
+            // `is_dir()` follows symlinks, so a `.sv-staging` entry that is
+            // a link to somewhere else satisfied this gate and every removal
+            // underneath it then resolved through the link. Judge the entry as
+            // itself, the way `entry_exists` above already does.
+            let real_dir = fs::symlink_metadata(&acc).map(|m| m.is_dir()).unwrap_or(false);
+            let ok = real_dir
                 && acc.parent().map(blocklist::is_mount_point).unwrap_or(false)
                 && p.starts_with(&acc);
             return if ok { Ok(()) } else { deny("not a staging directory on a mount point") };
