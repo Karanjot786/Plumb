@@ -46,6 +46,12 @@ enum Cmd {
     /// List installed applications.
     Apps {
         #[arg(long, default_value_t = 30)] limit: usize,
+        /// Show the files each application left around the system.
+        #[arg(long)] leftovers: bool,
+        /// Restrict to applications whose name or bundle id contains this.
+        #[arg(long)] app: Option<String>,
+        /// Include name-keyed matches. These are guesses, not proof.
+        #[arg(long)] guesses: bool,
     },
     /// Find byte-identical files and report what deleting them would free.
     Dupes {
@@ -292,13 +298,16 @@ fn main() -> std::io::Result<()> {
             }
             println!("  entries sharing blocks with another path free less than their listed size");
         }
-        Cmd::Apps { limit } => {
+        Cmd::Apps { limit, leftovers, app, guesses } => {
             let apps = storage_core::apps::list_apps()?;
             if apps.is_empty() {
                 println!("no applications found");
                 return Ok(());
             }
             let contested = storage_core::apps::contested_ids(&apps);
+            if *leftovers {
+                return show_leftovers(&apps, &contested, app.as_deref(), *guesses, *limit);
+            }
             let mut sized: Vec<(u64, &storage_core::apps::App)> = apps
                 .iter()
                 .map(|a| (storage_core::apps::dir_bytes(&a.path), a))
@@ -450,6 +459,62 @@ fn main() -> std::io::Result<()> {
                 println!("\n  {} snapshot(s) in {}", list.len(), snapshot::snapshots_dir()?.display());
             }
         },
+    }
+    Ok(())
+}
+
+/// Report what each application left behind. Read-only in every branch: this
+/// prints and nothing else.
+fn show_leftovers(
+    apps: &[storage_core::apps::App],
+    contested: &[String],
+    filter: Option<&str>,
+    guesses: bool,
+    limit: usize,
+) -> std::io::Result<()> {
+    use storage_core::apps::{self, LeftoverOpts};
+
+    let needle = filter.map(|f| f.to_lowercase());
+    let picked: Vec<&apps::App> = apps
+        .iter()
+        .filter(|a| match &needle {
+            None => true,
+            Some(n) => {
+                a.name.to_lowercase().contains(n)
+                    || a.bundle_id.as_deref().unwrap_or("").to_lowercase().contains(n)
+            }
+        })
+        .collect();
+
+    if picked.is_empty() {
+        println!("no application matched");
+        return Ok(());
+    }
+
+    let opts = LeftoverOpts { include_name_matches: guesses };
+    for a in picked.iter().take(limit) {
+        let items = apps::associated_for(a, contested, opts);
+        let removable = apps::stageable(&items);
+        let id = a.bundle_id.as_deref().unwrap_or("(no bundle id)");
+        let total: u64 = items.iter().map(|i| i.bytes).sum();
+        let free: u64 = removable.iter().map(|r| r.item().bytes).sum();
+
+        println!("\n{}  [{}]", a.name, id);
+        println!("  {} in {} item(s); {} removable here", human(total), items.len(), human(free));
+        if contested.iter().any(|c| Some(c.as_str()) == a.bundle_id.as_deref()) {
+            println!("  sibling guard: another installed app claims this id");
+        }
+        for i in &items {
+            let why = apps::exclusion_reason(i);
+            let mark = if why.is_some() { "  --" } else { "  ok" };
+            println!(
+                "{mark} {:>10}  {:<24} {}",
+                human(i.bytes),
+                i.category.label(),
+                i.path.display()
+            );
+            println!("            {}{}", i.evidence.label(), why.map(|w| format!("; {w}")).unwrap_or_default());
+        }
     }
     Ok(())
 }

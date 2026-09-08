@@ -58,6 +58,7 @@ pub enum Category {
     HttpStorages,
     ApplicationScripts,
     Cookies,
+    Autosave,
     LaunchAgent,
     Bundle,
     SystemLevel,
@@ -77,6 +78,7 @@ impl Category {
             Category::HttpStorages => "HTTP Storages",
             Category::ApplicationScripts => "Application Scripts",
             Category::Cookies => "Cookies",
+            Category::Autosave => "Autosave Information",
             Category::LaunchAgent => "Launch Agents",
             Category::Bundle => "Application bundle",
             Category::SystemLevel => "System (review only)",
@@ -122,6 +124,9 @@ pub struct Associated {
     pub evidence: Evidence,
     /// Displayed, never stageable.
     pub system_level: bool,
+    /// Another installed app claims the same bundle id, so this data is not
+    /// ours alone. Displayed, never stageable — the sibling guard.
+    pub shared: bool,
 }
 
 pub trait AppProvider {
@@ -191,11 +196,57 @@ pub fn is_system_path(p: &Path) -> bool {
         || s.starts_with("/System/")
 }
 
-/// The only way an `Associated` becomes eligible for staging. System-level
-/// items are filtered structurally here rather than at each call site, so a
-/// forgotten check cannot make one removable.
-pub fn stageable(items: &[Associated]) -> Vec<&Associated> {
-    items.iter().filter(|a| !a.system_level).collect()
+/// A leftover that is *provably* ours to remove.
+///
+/// This is the type-level guarantee, not a check a later refactor can forget.
+/// The inner field is private and `new` is the only constructor, so there is no
+/// way to obtain a `Removable` for a system path or for data an installed
+/// sibling still uses. Anything that builds a cleanup plan takes `Removable`,
+/// which means the plan simply cannot contain such a path — no runtime filter
+/// stands between the two.
+#[derive(Clone, Debug)]
+pub struct Removable(Associated);
+
+impl Removable {
+    /// `None` for anything that must never be staged. The system test is
+    /// re-derived from the path itself rather than trusting the `system_level`
+    /// flag, so a wrongly-built `Associated` cannot smuggle one through.
+    pub fn new(a: &Associated) -> Option<Removable> {
+        if a.system_level || a.shared || is_system_path(&a.path) {
+            return None;
+        }
+        Some(Removable(a.clone()))
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.0.path
+    }
+
+    pub fn item(&self) -> &Associated {
+        &self.0
+    }
+}
+
+/// The only way an `Associated` becomes eligible for staging.
+pub fn stageable(items: &[Associated]) -> Vec<Removable> {
+    let out: Vec<Removable> = items.iter().filter_map(Removable::new).collect();
+    debug_assert!(
+        out.iter().all(|r| !is_system_path(r.path())),
+        "a system path reached the stageable set"
+    );
+    out
+}
+
+/// Why a discovered item was kept out of the removable set. Shown so the user
+/// sees the whole footprint and understands what was left alone.
+pub fn exclusion_reason(a: &Associated) -> Option<&'static str> {
+    if a.system_level || is_system_path(&a.path) {
+        Some("system level - review only, not removable here")
+    } else if a.shared {
+        Some("another installed app claims this bundle id")
+    } else {
+        None
+    }
 }
 
 // -------------------------------------------------------------- discovery
@@ -391,4 +442,295 @@ fn node_for(t: &Tree, root: &Path, path: &Path) -> Option<NodeId> {
     let rel = path.strip_prefix(root.parent()?).ok()?;
     let want = rel.to_string_lossy();
     (0..t.len() as NodeId).find(|&i| t.path(i) == want)
+}
+
+// ------------------------------------------------------- leftover discovery
+
+/// What a leftover scan is allowed to guess at.
+#[derive(Clone, Copy, Default, Debug)]
+pub struct LeftoverOpts {
+    /// Include name-keyed matches. These are guesses, never proven, and are
+    /// labelled as such wherever they surface.
+    pub include_name_matches: bool,
+}
+
+#[cfg(target_os = "macos")]
+mod leftovers {
+    use super::*;
+    use std::collections::HashSet;
+
+    /// User-level directories keyed by bundle id.
+    ///
+    /// Every entry was derived from Apple's File System Programming Guide and
+    /// from inspecting a real `~/Library` on this machine. GPL uninstallers
+    /// ship lists of exactly this shape and those lists are the copyrightable
+    /// asset rather than an idea; none was consulted.
+    const ID_DIRS: [(&str, Category); 14] = [
+        ("Application Support", Category::ApplicationSupport),
+        ("Caches", Category::Caches),
+        ("Logs", Category::Logs),
+        ("Preferences", Category::Preferences),
+        ("Preferences/ByHost", Category::Preferences),
+        ("Containers", Category::Containers),
+        ("Group Containers", Category::GroupContainers),
+        ("Saved Application State", Category::SavedState),
+        ("WebKit", Category::WebKit),
+        ("HTTPStorages", Category::HttpStorages),
+        ("Application Scripts", Category::ApplicationScripts),
+        ("Cookies", Category::Cookies),
+        ("Autosave Information", Category::Autosave),
+        ("LaunchAgents", Category::LaunchAgent),
+    ];
+
+    /// Name-keyed directories. Only these two: an app's own vendor folder
+    /// lands here and nowhere else, and every other Library subtree is keyed
+    /// by id, so a name rule there would be pure guesswork.
+    const NAME_DIRS: [(&str, Category); 2] = [
+        ("Application Support", Category::ApplicationSupport),
+        ("Caches", Category::Caches),
+    ];
+
+    /// Discovered and displayed. Never removable — see `Removable`.
+    const SYSTEM_DIRS: [&str; 8] = [
+        "/Library/Application Support",
+        "/Library/Caches",
+        "/Library/Logs",
+        "/Library/Preferences",
+        "/Library/LaunchAgents",
+        "/Library/LaunchDaemons",
+        "/Library/PrivilegedHelperTools",
+        "/private/var/db/receipts",
+    ];
+
+    const CONTAINER_META: &str = ".com.apple.containermanagerd.metadata.plist";
+
+    /// Boundary-anchored entry match.
+    ///
+    /// `group` relaxes only the *left* side, for group container directories
+    /// which carry a leading team id or literal `group` segment
+    /// (`ABCDE12345.com.foo`, `group.com.foo`). At most two leading segments
+    /// are stripped and the full id is still required to start at a segment
+    /// boundary, so this never becomes a substring test.
+    fn entry_matches(name: &str, id: &str, group: bool) -> bool {
+        if id_matches(name, id) {
+            return true;
+        }
+        if !group {
+            return false;
+        }
+        let mut rest = name;
+        for _ in 0..2 {
+            match rest.split_once('.') {
+                Some((_, r)) => {
+                    rest = r;
+                    if id_matches(rest, id) {
+                        return true;
+                    }
+                }
+                None => break,
+            }
+        }
+        false
+    }
+
+    /// The bundle id a container declares for itself. Catches containers whose
+    /// directory name is not the id.
+    fn container_declares(dir: &Path) -> Option<String> {
+        let v = plist::Value::from_file(dir.join(CONTAINER_META)).ok()?;
+        let d = v.into_dictionary()?;
+        d.get("MCMMetadataIdentifier").and_then(|x| x.as_string()).map(|s| s.to_string())
+    }
+
+    fn push(
+        out: &mut Vec<Associated>,
+        seen: &mut HashSet<PathBuf>,
+        path: PathBuf,
+        category: Category,
+        evidence: Evidence,
+        system_level: bool,
+        shared: bool,
+    ) {
+        if !seen.insert(path.clone()) {
+            return;
+        }
+        let bytes = dir_bytes(&path);
+        out.push(Associated { path, bytes, category, evidence, system_level, shared });
+    }
+
+    /// Every path a scan of `dir` attributes to `id`.
+    fn sweep(
+        dir: &Path,
+        id: &str,
+        category: Category,
+        group: bool,
+        orphan: bool,
+        system_level: bool,
+        shared: bool,
+        out: &mut Vec<Associated>,
+        seen: &mut HashSet<PathBuf>,
+    ) {
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let by_name = entry_matches(&name, id, group);
+            // A container may be named something else and still declare the id.
+            let by_meta = !by_name
+                && category == Category::Containers
+                && container_declares(&e.path()).as_deref() == Some(id);
+            if !by_name && !by_meta {
+                continue;
+            }
+            let evidence = if by_meta {
+                Evidence::ContainerMetadataVerified
+            } else if orphan {
+                Evidence::FormerBundleMissing
+            } else {
+                Evidence::ExactBundleIdMatch
+            };
+            push(out, seen, e.path(), category, evidence, system_level, shared);
+        }
+    }
+
+    pub fn find(app: &App, contested: &[String], opts: LeftoverOpts) -> Vec<Associated> {
+        let mut out = Vec::new();
+        let mut seen: HashSet<PathBuf> = HashSet::new();
+
+        // The bundle itself is always ours, even when the id is contested:
+        // two apps sharing an id still have two distinct `.app` directories.
+        if app.path.exists() {
+            push(
+                &mut out,
+                &mut seen,
+                app.path.clone(),
+                Category::Bundle,
+                Evidence::ExactBundleIdMatch,
+                is_system_path(&app.path),
+                false,
+            );
+        }
+
+        let Some(home) = crate::blocklist::home() else { return out };
+        let lib = home.join("Library");
+        let orphan = !app.path.exists();
+
+        if let Some(id) = &app.bundle_id {
+            // Revalidate at the point of use. `list_apps` already filters, but
+            // an `App` can be built by a caller, and this is the last line
+            // before the id is interpolated into a path.
+            if !valid_bundle_id(id) {
+                return out;
+            }
+            debug_assert!(!id.contains('/') && !id.contains('*') && !id.contains(".."));
+
+            // Shared data stays displayed and stays un-stageable.
+            let shared = contested.iter().any(|c| c == id);
+
+            for (sub, cat) in ID_DIRS {
+                let group = cat == Category::GroupContainers;
+                sweep(
+                    &lib.join(sub),
+                    id,
+                    cat,
+                    group,
+                    orphan,
+                    false,
+                    shared,
+                    &mut out,
+                    &mut seen,
+                );
+            }
+            for sys in SYSTEM_DIRS {
+                sweep(
+                    Path::new(sys),
+                    id,
+                    Category::SystemLevel,
+                    false,
+                    orphan,
+                    true,
+                    shared,
+                    &mut out,
+                    &mut seen,
+                );
+            }
+        }
+
+        // Name-keyed. The weakest rule by far, so it is off unless asked for,
+        // guarded by `usable_as_name_key`, and never marked proven.
+        if opts.include_name_matches && usable_as_name_key(&app.name) {
+            let shared = app
+                .bundle_id
+                .as_ref()
+                .map(|id| contested.iter().any(|c| c == id))
+                .unwrap_or(false);
+            let want = app.name.trim().to_ascii_lowercase();
+            for (sub, cat) in NAME_DIRS {
+                let dir = lib.join(sub);
+                let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+                for e in rd.flatten() {
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    if name.to_ascii_lowercase() != want {
+                        continue;
+                    }
+                    push(
+                        &mut out,
+                        &mut seen,
+                        e.path(),
+                        cat,
+                        Evidence::NameMatch,
+                        false,
+                        shared,
+                        );
+                }
+            }
+        }
+
+        out.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+        out
+    }
+}
+
+/// Every file and directory we can attribute to `app`.
+///
+/// `contested` is the output of `contested_ids` over all installed apps: pass
+/// it so the sibling guard can fire. An empty slice disables the guard, which
+/// is only ever correct when there is genuinely one app.
+#[cfg(target_os = "macos")]
+pub fn associated_for(app: &App, contested: &[String], opts: LeftoverOpts) -> Vec<Associated> {
+    leftovers::find(app, contested, opts)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn associated_for(_app: &App, _contested: &[String], _opts: LeftoverOpts) -> Vec<Associated> {
+    Vec::new()
+}
+
+/// An `AppProvider` over the machine this is running on. Holds the contested
+/// id set so every `associated` call has the sibling guard available without
+/// re-enumerating every application.
+pub struct Local {
+    apps: Vec<App>,
+    contested: Vec<String>,
+    pub opts: LeftoverOpts,
+}
+
+impl Local {
+    pub fn new() -> io::Result<Local> {
+        let apps = list_apps()?;
+        let contested = contested_ids(&apps);
+        Ok(Local { apps, contested, opts: LeftoverOpts::default() })
+    }
+
+    pub fn contested(&self) -> &[String] {
+        &self.contested
+    }
+}
+
+impl AppProvider for Local {
+    fn list(&self) -> io::Result<Vec<App>> {
+        Ok(self.apps.clone())
+    }
+
+    fn associated(&self, app: &App) -> io::Result<Vec<Associated>> {
+        Ok(associated_for(app, &self.contested, self.opts))
+    }
 }
