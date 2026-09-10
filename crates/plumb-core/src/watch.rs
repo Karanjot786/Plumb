@@ -254,7 +254,7 @@ impl Poll {
     /// `diff` reads `sub_blocks`, which a bare scan leaves empty, so the
     /// aggregate is part of taking a baseline rather than an optional extra.
     fn scan(&self) -> io::Result<crate::Tree> {
-        let mut t = crate::scan(&self.root, self.threads, |_| {})?;
+        let (mut t, _) = crate::scan(&self.root, self.threads, &globset::GlobSet::empty(), |_| {}, &std::sync::atomic::AtomicBool::new(false))?;
         crate::aggregate(&mut t);
         debug_assert_eq!(t.sub_blocks.len(), t.len(), "poll baseline was not aggregated");
         Ok(t)

@@ -122,7 +122,7 @@ fn load(path: &PathBuf, threads: usize) -> std::io::Result<Tree> {
     let threads = if threads == 0 {
         std::thread::available_parallelism().map_or(4, |n| n.get())
     } else { threads };
-    let mut t = scan(path, threads, |_| {})?;
+    let (mut t, _) = scan(path, threads, &plumb_core::globset::GlobSet::empty(), |_| {}, &std::sync::atomic::AtomicBool::new(false))?;
     let private = plumb_core::scan::private_sizes(&t, path);
     plumb_core::aggregate::aggregate_with_private(&mut t, &private);
     Ok(t)

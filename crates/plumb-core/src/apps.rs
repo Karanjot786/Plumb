@@ -949,7 +949,7 @@ fn honest_bytes(items: &mut [Removable]) -> u64 {
             let root = crate::blocklist::canon_keep_link(r.path());
             // A scan that will not run is not a reason to invent a number;
             // fall back to the naive one rather than silently reporting zero.
-            let Ok(mut tree) = crate::scan(&root, threads, |_| {}) else {
+            let Ok((mut tree, _)) = crate::scan(&root, threads, &globset::GlobSet::empty(), |_| {}, &std::sync::atomic::AtomicBool::new(false)) else {
                 return r.item().bytes;
             };
             if tree.is_empty() {
@@ -1096,7 +1096,7 @@ pub fn prepare_uninstall(plan: &CleanupPlan, threads: usize) -> io::Result<Prepa
         let root = crate::blocklist::canon_keep_link(r.path());
         // Scanning each item separately keeps the aggregate honest for a
         // directory and costs nothing for a plist.
-        let mut tree = crate::scan(&root, threads.max(1), |_| {})?;
+        let (mut tree, _) = crate::scan(&root, threads.max(1), &globset::GlobSet::empty(), |_| {}, &std::sync::atomic::AtomicBool::new(false))?;
         let private = crate::scan::private_sizes(&tree, &root);
         crate::aggregate::aggregate_with_private(&mut tree, &private);
         if tree.is_empty() {

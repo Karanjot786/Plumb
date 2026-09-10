@@ -18,6 +18,7 @@ struct Loaded {
     tree: Tree,
     root_path: String,
     elapsed_ms: u64,
+    excluded: u32,
 }
 
 /// Applications and their leftovers, computed once per `apps_list` call.
@@ -50,6 +51,7 @@ struct App {
     /// Thumbnails keyed by (dev, ino, mtime, px), so editing a file invalidates
     /// its own entry without a sweep.
     thumbs: Mutex<std::collections::HashMap<(u64, u64, u32, u32), Vec<u8>>>,
+    scan_cancel: Arc<AtomicBool>,
     watch: Mutex<Option<Box<dyn plumb_core::watch::Watcher + Send>>>,
 }
 
@@ -168,6 +170,7 @@ struct Overview {
     unaccounted: u64,
     denied: u32,
     shared: u32,
+    excluded: u32,
     elapsed_ms: u64,
     wins: Vec<WinOut>,
     types: Vec<TypeSlice>,
@@ -218,6 +221,7 @@ fn build_overview(l: &Loaded, size: SizeMode) -> Overview {
         unaccounted: un,
         denied,
         shared,
+        excluded: l.excluded,
         elapsed_ms: l.elapsed_ms,
         wins: quick_wins(t)
             .into_iter()
@@ -239,7 +243,7 @@ fn build_overview(l: &Loaded, size: SizeMode) -> Overview {
 }
 
 #[tauri::command]
-async fn scan_dir(path: String, size: u8, app: tauri::AppHandle) -> Result<Overview, String> {
+async fn scan_dir(path: String, size: u8, excludes: Vec<String>, app: tauri::AppHandle) -> Result<Overview, String> {
     let p = PathBuf::from(&path);
     if !p.is_dir() {
         return Err(format!("{path} is not a folder"));
@@ -248,23 +252,33 @@ async fn scan_dir(path: String, size: u8, app: tauri::AppHandle) -> Result<Overv
     let started = Instant::now();
     let p2 = p.clone();
     let emitter = app.clone();
-    let tree = tauri::async_runtime::spawn_blocking(move || {
+    let mut b = plumb_core::globset::GlobSetBuilder::new();
+    for g in &excludes {
+        if let Ok(g) = plumb_core::globset::Glob::new(g.trim()) {
+            if !g.glob().is_empty() { b.add(g); }
+        }
+    }
+    let set = b.build().map_err(|e| e.to_string())?;
+    let cancel = app.state::<App>().scan_cancel.clone();
+    cancel.store(false, Ordering::Relaxed);
+    let (tree, excluded) = tauri::async_runtime::spawn_blocking(move || {
         // Progress is integers only; payloads never travel by event.
-        let mut t = scan(&p2, threads, |seen| {
+        let (mut t, ex) = scan(&p2, threads, &set, |seen| {
             let _ = emitter.emit("scan_progress", seen);
-        })?;
+        }, &cancel)?;
         aggregate(&mut t);
-        Ok::<Tree, std::io::Error>(t)
+        Ok::<(Tree, u32), std::io::Error>((t, ex))
     })
     .await
     .map_err(|e| e.to_string())?
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| if e.kind() == std::io::ErrorKind::Interrupted { "cancelled".to_string() } else { e.to_string() })?;
 
     if tree.is_empty() {
         return Err(format!("nothing readable under {path}"));
     }
     let loaded = Loaded {
         tree,
+        excluded,
         root_path: p.display().to_string(),
         elapsed_ms: started.elapsed().as_millis() as u64,
     };
@@ -603,6 +617,9 @@ fn quick_look(id: Option<NodeId>) -> Result<(), String> {
     if id.is_none() { return Ok(()); }
     Err("fallback".into())
 }
+
+#[tauri::command]
+fn scan_cancel(state: tauri::State<'_, App>) { state.scan_cancel.store(true, Ordering::Relaxed); }
 
 #[tauri::command]
 fn reveal(id: NodeId, state: tauri::State<'_, App>) -> Result<(), String> {
@@ -1199,6 +1216,7 @@ fn main() {
             thumbnail,
             quick_look,
             reveal,
+            scan_cancel,
             open_privacy_settings,
             snapshot_save,
             snapshot_list,

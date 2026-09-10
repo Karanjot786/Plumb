@@ -1,3 +1,7 @@
+// Re-exported so the CLI and the UI can name a GlobSet without taking the
+// dependency themselves.
+pub use globset;
+
 pub mod aggregate;
 pub mod apps;
 pub mod arena;

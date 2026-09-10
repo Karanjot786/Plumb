@@ -73,7 +73,7 @@ $("depth").oninput = (e) => {
   draw();
 };
 $("filter").oninput = (e) => { S.filter = e.target.value; draw(); };
-$("go").onclick = () => startScan($("path").value.trim());
+$("go").onclick = () => scanning ? invoke("scan_cancel") : startScan($("path").value.trim());
 $("pick").onclick = async () => {
   // Invoked as a plugin command so the page needs no bundled JS binding.
   const dir = await invoke("plugin:dialog|open", {
@@ -96,6 +96,10 @@ invoke("targets").then((list) => {
 
 // -------------------------------------------------------------------- scan
 
+$("excludes").value = localStorage.excludes || "";
+$("excludes").onchange = (e) => { localStorage.excludes = e.target.value; };
+let scanning = false;
+
 async function startScan(path) {
   if (!path) return;
   $("status").textContent = "scanning...";
@@ -106,8 +110,12 @@ async function startScan(path) {
       $("status").textContent = `scanning... ${Number(e.payload).toLocaleString()} entries`;
       $("empty").textContent = `Scanning ${path}\n${Number(e.payload).toLocaleString()} entries`;
     });
-    const ov = await invoke("scan_dir", { path, size: S.size });
+    scanning = true;
+    $("go").textContent = "Cancel";
+    const ov = await invoke("scan_dir", { path, size: S.size, excludes: $("excludes").value.split("\n") });
     if (unlisten) unlisten();
+    scanning = false;
+    $("go").textContent = "Scan";
     S.scanned = true;
     S.node = 0;
     tray.clear();
@@ -124,6 +132,8 @@ async function startScan(path) {
     await draw();
   } catch (e) {
     if (unlisten) unlisten();
+    scanning = false;
+    $("go").textContent = "Scan";
     $("status").textContent = String(e);
     $("empty").textContent = String(e);
   }
@@ -146,7 +156,8 @@ function applyOverview(ov) {
   $("title-sub").textContent =
     `${human(shown)} · ${ov.files.toLocaleString()} files · ${ov.dirs.toLocaleString()} folders` +
     (ov.denied ? ` · ${ov.denied} unreadable` : "") +
-    (ov.shared ? ` · ${ov.shared} sharing blocks` : "");
+    (ov.shared ? ` · ${ov.shared} sharing blocks` : "") +
+    (ov.excluded ? ` · ${ov.excluded} folders excluded` : "");
 
   const total = Math.max(1, Number(ov.volume_total));
   const scanned = Math.min(Number(ov.allocated), total);

@@ -83,7 +83,15 @@ enum Step { Visit(usize, NodeId), Close(NodeId) }
 /// dua-core's Order::ParentFirst guarantees only that a parent precedes its
 /// descendants; its own docs say "sibling order is unspecified in both modes".
 /// So collect, then emit in explicit DFS order to get contiguous subtrees.
-pub fn scan(root: &Path, threads: usize, mut progress: impl FnMut(u64) + Send) -> io::Result<Tree> {
+pub fn scan(
+    root: &Path,
+    threads: usize,
+    excludes: &globset::GlobSet,
+    mut progress: impl FnMut(u64) + Send,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> io::Result<(Tree, u32)> {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
     let opts = Options {
         skip_metadata: false,
         #[cfg(target_os = "macos")]
@@ -94,7 +102,22 @@ pub fn scan(root: &Path, threads: usize, mut progress: impl FnMut(u64) + Send) -
     let mut children_of: Vec<Vec<usize>> = Vec::new();
     let mut root_raw: Option<usize> = None;
 
-    for item in dua_core::walk(root, threads, Order::ParentFirst, opts, |_| true) {
+    // `walk`'s filter must be 'static, so the counter lives in an Arc rather
+    // than on this stack frame.
+    let excluded = Arc::new(AtomicU32::new(0));
+    let counter = excluded.clone();
+    let set = excludes.clone();
+    // ponytail: matched on the basename, which is how people write
+    // `node_modules`; relative-path globs if someone asks.
+    let keep = move |e: &Entry| {
+        // depth 0 is the walk root; excludes never apply to it.
+        if e.depth == 0 { return true; }
+        let hit = set.is_match(&e.file_name);
+        if hit { counter.fetch_add(1, Ordering::Relaxed); }
+        !hit
+    };
+
+    for item in dua_core::walk(root, threads, Order::ParentFirst, opts, keep) {
         let e: Entry = match item { Ok(e) => e, Err(_) => continue };
         let (meta, denied) = match &e.metadata {
             Some(Ok(m)) => (meta_of(m), false),
@@ -105,6 +128,9 @@ pub fn scan(root: &Path, threads: usize, mut progress: impl FnMut(u64) + Send) -
         // Every 4096 entries, not every entry: the callback crosses an IPC
         // boundary in the UI and would otherwise cost more than the walk.
         if idx % 4096 == 0 {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(io::Error::from(io::ErrorKind::Interrupted));
+            }
             progress(idx as u64);
         }
         let dir_idx = e.directory_id.map(|d| d.index());
@@ -138,7 +164,7 @@ pub fn scan(root: &Path, threads: usize, mut progress: impl FnMut(u64) + Send) -
     }
 
     let mut tree = Tree::default();
-    let Some(start) = root_raw else { return Ok(tree) };
+    let Some(start) = root_raw else { return Ok((tree, excluded.load(Ordering::Relaxed))) };
 
     let mut stack = vec![Step::Visit(start, NO_PARENT)];
     while let Some(step) = stack.pop() {
@@ -175,7 +201,7 @@ pub fn scan(root: &Path, threads: usize, mut progress: impl FnMut(u64) + Send) -
     }
     tree.check();
     check_sibling_order(&tree);
-    Ok(tree)
+    Ok((tree, excluded.load(Ordering::Relaxed)))
 }
 
 /// Siblings must be emitted in raw-name-byte order. `dua-cli` enforces the same
