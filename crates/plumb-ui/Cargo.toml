@@ -18,3 +18,6 @@ plumb-core = { path = "../plumb-core" }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+quicklook = "0.2"

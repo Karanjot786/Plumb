@@ -567,6 +567,43 @@ fn thumbnail(id: NodeId, px: u32, state: tauri::State<'_, App>) -> Response {
     Response::new(bytes)
 }
 
+// Review cut (d): one command. `None` hides the panel, so the frontend never
+// has to keep two commands in step.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn quick_look(id: Option<NodeId>, app: tauri::AppHandle) -> Result<(), String> {
+    // API note: quicklook 0.2 returns Option, not Result, and takes &self.
+    let Some(id) = id else {
+        return app
+            .run_on_main_thread(|| {
+                if let Some(p) = quicklook::QuickLookPanel::shared() { p.hide(); }
+            })
+            .map_err(|e| e.to_string());
+    };
+    let path = {
+        let st = app.state::<App>();
+        let g = st.loaded.lock().unwrap();
+        let l = g.as_ref().ok_or("nothing scanned yet")?;
+        abs(l, id).ok_or("no path")?.display().to_string()
+    };
+    app.run_on_main_thread(move || {
+        use quicklook::{PreviewItem, QuickLookPanel};
+        if let (Some(panel), Some(item)) = (QuickLookPanel::shared(), PreviewItem::from_file_url(&path, None)) {
+            panel.set_items(vec![item]);
+            panel.show();
+        }
+    })
+    .map_err(|e| e.to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn quick_look(id: Option<NodeId>) -> Result<(), String> {
+    // None means hide, which off macOS is a no-op the dialog handles itself.
+    if id.is_none() { return Ok(()); }
+    Err("fallback".into())
+}
+
 #[derive(Serialize)]
 struct StageOut {
     manifest: u64,
@@ -1137,6 +1174,7 @@ fn main() {
             cleanup_commit,
             cleanup_cancel,
             thumbnail,
+            quick_look,
             snapshot_save,
             snapshot_list,
             snapshot_diff,

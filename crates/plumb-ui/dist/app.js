@@ -504,10 +504,31 @@ async function undoManifest(id) {
   await paintPending(); await refreshOverview(); await draw();
   toast(`Restored ${n} items`);
 }
+let qlOpen = false;
+async function quickLook(id) {
+  if (id < 0) return;
+  try { await invoke("quick_look", { id }); qlOpen = true; return; } catch {}
+  const info = await invoke("node_info", { id, size: S.size });
+  const buf = info.is_dir ? new ArrayBuffer(0) : await invoke("thumbnail", { id, px: 800 });
+  const img = $("ql-img");
+  img.hidden = !buf.byteLength;
+  if (buf.byteLength) img.src = URL.createObjectURL(new Blob([buf], { type: "image/png" }));
+  $("ql-text").textContent = `${info.name} \u00b7 ${mid(info.path, 80)} \u00b7 ${human(info.bytes)}`;
+  $("ql").showModal();
+}
+function quickLookHide() {
+  qlOpen = false;
+  invoke("quick_look", { id: null }).catch(() => {});
+  if ($("ql").open) $("ql").close();
+}
+$("ql-btn").onclick = () => quickLook(S.sel >= 0 ? S.sel : inspectId);
+$("ql-close").onclick = quickLookHide;
+
 document.addEventListener("keydown", (e) => {
   if (e.target.matches("input, textarea")) return;
   if ((e.metaKey || e.ctrlKey) && e.key === "z") { e.preventDefault(); undoManifest(lastStage); }
-  if (e.key === "Escape") { $("toast").hidden = true; hideTip(); }
+  if (e.key === " " && S.scanned) { e.preventDefault(); qlOpen ? quickLookHide() : quickLook(S.sel >= 0 ? S.sel : inspectId); }
+  if (e.key === "Escape") { $("toast").hidden = true; hideTip(); quickLookHide(); }
 });
 
 async function paintPending() {
