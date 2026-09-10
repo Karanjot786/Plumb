@@ -5,8 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use plumb_core::layout::{self, Opts, Scope, SizeMode, View};
 use plumb_core::clean;
 use plumb_core::render::{kind_of, render, ColorMode, Kind, RenderOpts};
@@ -44,6 +44,9 @@ struct App {
     /// Manifest id -> node ids flagged REMOVED for it. Session-only; after a
     /// restart the next scan reads the disk, which is the truth.
     staged_ids: Mutex<std::collections::HashMap<u64, Vec<NodeId>>>,
+    /// The running commit's cancel flag. One at a time: two deletes fighting
+    /// for the disk help nobody, and the card has one progress row.
+    commits: Mutex<Option<Arc<AtomicBool>>>,
     watch: Mutex<Option<Box<dyn plumb_core::watch::Watcher + Send>>>,
 }
 
@@ -553,6 +556,7 @@ struct ManifestOut {
     total_bytes: u64,
     expires_in_days: u64,
     expired: bool,
+    partial: bool,
 }
 
 #[tauri::command]
@@ -564,6 +568,7 @@ fn cleanup_list() -> Result<Vec<ManifestOut>, String> {
         .map(|m| ManifestOut {
             expires_in_days: m.expires_at.saturating_sub(now) / 86_400,
             expired: m.is_expired(now),
+            partial: m.items.iter().any(|i| i.partial),
             id: m.id,
             label: m.label,
             items: m.items.len(),
@@ -598,9 +603,43 @@ struct CommitOut {
     skipped: Vec<(String, String)>,
 }
 
+#[derive(Serialize, Clone)]
+struct ProgressOut { files: u64, bytes: u64, current: String }
+
 #[tauri::command]
-fn cleanup_commit(id: u64) -> Result<CommitOut, String> {
-    let r = clean::commit(id).map_err(|e| e.to_string())?;
+async fn cleanup_commit(
+    id: u64,
+    on_progress: tauri::ipc::Channel<ProgressOut>,
+    app: tauri::AppHandle,
+) -> Result<CommitOut, String> {
+    let cancel = {
+        let st = app.state::<App>();
+        let mut m = st.commits.lock().unwrap();
+        if m.is_some() { return Err("a commit is already running".into()); }
+        let c = Arc::new(AtomicBool::new(false));
+        *m = Some(c.clone());
+        c
+    };
+    let r = tauri::async_runtime::spawn_blocking(move || {
+        let mut last = Instant::now();
+        clean::commit_with(id, &mut |p| {
+            // ponytail: 50 ms clock only. A per-N-files trigger would fire in
+            // bursts on fast dirs and add nothing the clock does not already
+            // bound. Add one only if a slow volume starves the row.
+            if last.elapsed() >= Duration::from_millis(50) {
+                last = Instant::now();
+                let _ = on_progress.send(ProgressOut {
+                    files: p.files, bytes: p.bytes, current: p.current.display().to_string(),
+                });
+            }
+        }, &cancel)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let st = app.state::<App>();
+    st.commits.lock().unwrap().take();
+    st.staged_ids.lock().unwrap().remove(&id);
+    let r = r.map_err(|e| e.to_string())?;
     Ok(CommitOut {
         freed: r.freed,
         skipped: r.skipped.iter().map(|(p, w)| (p.display().to_string(), w.clone())).collect(),
@@ -608,6 +647,11 @@ fn cleanup_commit(id: u64) -> Result<CommitOut, String> {
 }
 
 // ---------------------------------------------------------------- stage 5
+
+#[tauri::command]
+fn cleanup_cancel(state: tauri::State<'_, App>) {
+    if let Some(c) = state.commits.lock().unwrap().as_ref() { c.store(true, Ordering::Relaxed); }
+}
 
 #[derive(Serialize)]
 struct SnapOut {
@@ -1034,6 +1078,7 @@ fn main() {
             cleanup_list,
             cleanup_restore,
             cleanup_commit,
+            cleanup_cancel,
             snapshot_save,
             snapshot_list,
             snapshot_diff,

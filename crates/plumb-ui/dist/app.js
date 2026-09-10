@@ -29,6 +29,10 @@ const overlay = $("overlay");
 const ictx = image.getContext("2d");
 const octx = overlay.getContext("2d");
 
+function mid(s, n) {
+  return s.length <= n ? s : s.slice(0, n / 2 - 1) + "\u2026" + s.slice(-(n / 2));
+}
+
 function human(b) {
   const u = ["B", "KB", "MB", "GB", "TB"];
   let v = Number(b), i = 0;
@@ -465,7 +469,8 @@ async function paintPending() {
     const li = document.createElement("li");
     const n = document.createElement("span");
     n.className = "name";
-    n.textContent = `${human(m.total_bytes)} · ${m.items} items · ${m.expired ? "expired" : m.expires_in_days + "d left"}`;
+    n.textContent = `${human(m.total_bytes)} · ${m.items} items · ${m.expired ? "expired" : m.expires_in_days + "d left"}`
+      + (m.partial ? " · partially deleted" : "");
     const acts = document.createElement("span");
     acts.className = "acts";
     const undo = document.createElement("button");
@@ -484,9 +489,26 @@ async function paintPending() {
     del.textContent = "Commit";
     del.onclick = async () => {
       if (!confirm(`Permanently delete ${m.items} items (${human(m.total_bytes)})? This cannot be undone.`)) return;
-      const freed = await invoke("cleanup_commit", { id: m.id });
-      $("status").textContent = `freed ${human(freed)}`;
+      const ch = new window.__TAURI__.core.Channel();
+      ch.onmessage = (p) => {
+        n.textContent = `Deleting · ${p.files.toLocaleString()} files · ${human(p.bytes)} of ${human(m.total_bytes)} · ${mid(p.current, 48)}`;
+        $("status").textContent = n.textContent;
+      };
+      undo.hidden = true;
+      del.textContent = "Cancel";
+      del.onclick = () => invoke("cleanup_cancel");
+      try {
+        const r = await invoke("cleanup_commit", { id: m.id, onProgress: ch });
+        $("status").textContent = `freed ${human(r.freed)}`;
+        if (r.skipped.length) {
+          const ul = document.createElement("ul");
+          ul.className = "muted tiny";
+          for (const [p, why] of r.skipped) { const s = document.createElement("li"); s.textContent = `${mid(p, 60)}: ${why}`; ul.append(s); }
+          li.append(ul);
+        }
+      } catch (e) { $("status").textContent = String(e); }
       await paintPending();
+      await refreshOverview();
     };
     acts.append(undo, del);
     li.append(n, acts);
