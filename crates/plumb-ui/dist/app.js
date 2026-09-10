@@ -217,14 +217,15 @@ async function draw() {
   });
   pending = false;
   const u8 = new Uint8Array(buf);
-  if (u8.byteLength < 16) return;
+  if (u8.byteLength < 20) return;
   const dv = new DataView(u8.buffer, u8.byteOffset);
   const pw = dv.getUint32(0, true), ph = dv.getUint32(4, true);
   const n = dv.getUint32(8, true);
   S.geom = dv.getUint32(12, true);
+  const nl = dv.getUint32(16, true);
 
   const rects = new Array(n);
-  let off = 16;
+  let off = 20;
   for (let i = 0; i < n; i++, off += 24) {
     rects[i] = {
       x: dv.getFloat32(off, true),
@@ -237,12 +238,29 @@ async function draw() {
   }
   S.rects = rects;
 
+  const dec = new TextDecoder();
+  const labels = new Array(nl);
+  for (let i = 0; i < nl; i++) {
+    const x = dv.getFloat32(off, true), y = dv.getFloat32(off + 4, true);
+    const color = `rgb(${u8[off + 8]},${u8[off + 9]},${u8[off + 10]})`;
+    const len = dv.getUint16(off + 11, true);
+    labels[i] = { x, y, color, text: dec.decode(u8.subarray(off + 13, off + 13 + len)) };
+    off += 13 + len;
+  }
+  S.labels = labels;
+
   for (const c of [image, overlay]) {
     c.width = pw; c.height = ph;
     c.style.width = w + "px"; c.style.height = h + "px";
   }
   const px = new Uint8ClampedArray(u8.buffer, u8.byteOffset + off, pw * ph * 4);
   ictx.putImageData(new ImageData(px, pw, ph), 0, 0);
+  ictx.save();
+  ictx.scale(dpr, dpr);
+  ictx.font = "12px system-ui, -apple-system, 'Segoe UI', sans-serif";
+  ictx.textBaseline = "top";
+  for (const l of labels) { ictx.fillStyle = l.color; ictx.fillText(l.text, l.x, l.y); }
+  ictx.restore();
   S.hover = -1;
   // paintOverlay() clears the overlay itself, so it must come last here -
   // a trailing clearRect would wipe the selection outline it just drew.

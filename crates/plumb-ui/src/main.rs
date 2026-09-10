@@ -319,7 +319,7 @@ fn render_view(req: ViewReq, state: tauri::State<'_, App>) -> Response {
     };
 
     let started = Instant::now();
-    let (pixels, rects) = render(t, node, &o);
+    let (pixels, rects, labels) = render(t, node, &o);
     let (pw, ph) = plumb_core::render::px_size(&o);
     eprintln!(
         "render {view:?} node={node} rects={} in {} ms",
@@ -334,11 +334,12 @@ fn render_view(req: ViewReq, state: tauri::State<'_, App>) -> Response {
         layout::Geom::Circle => 2,
     };
 
-    let mut buf = Vec::with_capacity(16 + rects.len() * 24 + pixels.len());
+    let mut buf = Vec::with_capacity(20 + rects.len() * 24 + labels.len() * 32 + pixels.len());
     buf.extend_from_slice(&pw.to_le_bytes());
     buf.extend_from_slice(&ph.to_le_bytes());
     buf.extend_from_slice(&(rects.len() as u32).to_le_bytes());
     buf.extend_from_slice(&geom.to_le_bytes());
+    buf.extend_from_slice(&(labels.len() as u32).to_le_bytes());
     for r in &rects {
         buf.extend_from_slice(&r.x.to_le_bytes());
         buf.extend_from_slice(&r.y.to_le_bytes());
@@ -346,6 +347,15 @@ fn render_view(req: ViewReq, state: tauri::State<'_, App>) -> Response {
         buf.extend_from_slice(&r.h.to_le_bytes());
         buf.extend_from_slice(&r.id.to_le_bytes());
         buf.extend_from_slice(&(r.depth as u32).to_le_bytes());
+    }
+    for l in &labels {
+        buf.extend_from_slice(&l.x.to_le_bytes());
+        buf.extend_from_slice(&l.y.to_le_bytes());
+        buf.extend_from_slice(&[l.color.0, l.color.1, l.color.2]);
+        let b = l.text.as_bytes();
+        let n = b.len().min(u16::MAX as usize);
+        buf.extend_from_slice(&(n as u16).to_le_bytes());
+        buf.extend_from_slice(&b[..n]);
     }
     buf.extend_from_slice(&pixels);
     Response::new(buf)
