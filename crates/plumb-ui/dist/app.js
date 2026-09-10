@@ -1317,3 +1317,31 @@ $("mon-pause").onclick = () => {
 $("mon-clear").onclick = () => { M.events = []; paintEvents(); };
 
 setMode("storage");
+
+// ------------------------------------------------------------------- tour
+
+const TOUR = [
+  ["targets", "Pick a folder. Home is a good first scan."],
+  ["stage", "Tile size is what deleting would free, not what Finder shows. The Size menu switches between them."],
+  ["tabs", "Eight views of the same scan. Treemap for size, Age map for what has gone stale."],
+  ["add-cleanup", "Click a tile, then Add to Cleanup. Nothing is deleted yet."],
+  ["stage-btn", "Stage moves files aside. Undo lives in the Staged card, and nothing is deleted until you Commit."],
+];
+let tourStep = -1;
+function tourShow(i) {
+  tourStep = i;
+  if (i < 0 || i >= TOUR.length) { $("spot").hidden = true; if ($("tour").open) $("tour").close(); localStorage.tour = "1"; return; }
+  const [id, text] = TOUR[i];
+  const r = $(id).getBoundingClientRect();
+  $("spot").hidden = r.width === 0;   // hidden until a scan or a selection exists
+  Object.assign($("spot").style, { left: r.left - 6 + "px", top: r.top - 6 + "px", width: r.width + 12 + "px", height: r.height + 12 + "px" });
+  $("tour-text").textContent = text + (r.width === 0 ? " (scan a folder first)" : "");
+  $("tour-back").disabled = i === 0;
+  $("tour-next").textContent = i === TOUR.length - 1 ? "Done" : "Next";
+  if (!$("tour").open) $("tour").show();
+}
+$("tour-next").onclick = () => tourShow(tourStep + 1);
+$("tour-back").onclick = () => tourShow(tourStep - 1);
+$("tour-skip").onclick = () => tourShow(-1);
+$("help").onclick = () => tourShow(0);
+if (!localStorage.tour) tourShow(0);

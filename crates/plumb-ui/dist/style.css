@@ -276,3 +276,6 @@ button.danger { color: #a8443a; }
 
 .banner { display: flex; gap: 8px; align-items: center; background: #fbf1e3; border: 1px solid #e6cfae; border-radius: 8px; padding: 8px 10px; font-size: 12px; margin-bottom: 10px; }
 .banner span { flex: 1; }
+
+#spot { position: fixed; z-index: 40; border-radius: 10px; pointer-events: none; box-shadow: 0 0 0 9999px rgba(29,26,21,.45); transition: all 200ms; }
+#tour { z-index: 41; border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; max-width: 340px; }
