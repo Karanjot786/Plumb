@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use plumb_core::snapshot;
 use plumb_core::{
-    commit, list_staged, plan, quick_wins, reconcile, restore, scan, stage, volume_of,
+    list_staged, plan, quick_wins, reconcile, restore, scan, stage, volume_of,
     Flags, NodeId, Plan, Tree,
 };
 
@@ -311,7 +311,10 @@ fn main() -> std::io::Result<()> {
             }
         }
         Cmd::Commit { id } => {
-            let r = commit(*id)?;
+            let r = plumb_core::clean::commit_with(*id, &mut |p| {
+                if p.files % 500 == 0 { eprint!("\r{} files, {}   ", p.files, plumb_core::render::human(p.bytes)); }
+            }, &std::sync::atomic::AtomicBool::new(false))?;
+            eprintln!();
             println!("manifest {id}: {} freed", human(r.freed));
             for (path, why) in &r.skipped {
                 println!("  skipped  {}  ({why})", path.display());
