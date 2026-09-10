@@ -273,3 +273,6 @@ button.danger { color: #a8443a; }
 
 #image { transition: transform 180ms ease-out, opacity 120ms; }
 @media (prefers-reduced-motion: reduce) { #image { transition: none; } }
+
+.banner { display: flex; gap: 8px; align-items: center; background: #fbf1e3; border: 1px solid #e6cfae; border-radius: 8px; padding: 8px 10px; font-size: 12px; margin-bottom: 10px; }
+.banner span { flex: 1; }

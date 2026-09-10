@@ -99,6 +99,8 @@ invoke("targets").then((list) => {
 $("excludes").value = localStorage.excludes || "";
 $("excludes").onchange = (e) => { localStorage.excludes = e.target.value; };
 let scanning = false;
+$("fda-open").onclick = () => invoke("open_privacy_settings");
+$("fda-x").onclick = () => { localStorage.fdaDismissed = "1"; $("fda").hidden = true; };
 
 async function startScan(path) {
   if (!path) return;
@@ -158,6 +160,13 @@ function applyOverview(ov) {
     (ov.denied ? ` · ${ov.denied} unreadable` : "") +
     (ov.shared ? ` · ${ov.shared} sharing blocks` : "") +
     (ov.excluded ? ` · ${ov.excluded} folders excluded` : "");
+
+  const mac = navigator.platform.startsWith("Mac");
+  $("fda").hidden = !(ov.denied > 0 && !localStorage.fdaDismissed);
+  $("fda-text").textContent = mac
+    ? `macOS blocked ${ov.denied} folders. Grant Full Disk Access to see everything.`
+    : `${ov.denied} folders were unreadable.`;
+  $("fda-open").hidden = !mac;
 
   const total = Math.max(1, Number(ov.volume_total));
   const scanned = Math.min(Number(ov.allocated), total);
