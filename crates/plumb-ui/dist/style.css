@@ -270,3 +270,6 @@ button.danger { color: #a8443a; }
 #tip img { width: 96px; height: 96px; object-fit: contain; border-radius: 4px; background: var(--paper); }
 #tip b { display: block; margin-bottom: 2px; }
 #tip .path { font-size: 11px; }
+
+#image { transition: transform 180ms ease-out, opacity 120ms; }
+@media (prefers-reduced-motion: reduce) { #image { transition: none; } }

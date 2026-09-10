@@ -504,6 +504,26 @@ async function undoManifest(id) {
   await paintPending(); await refreshOverview(); await draw();
   toast(`Restored ${n} items`);
 }
+function center(q) {
+  if (S.geom === 1) { const a = q.x + q.w / 2, rr = q.y + q.h / 2; return [S.css.w / 2 + Math.cos(a) * rr, S.css.h / 2 + Math.sin(a) * rr]; }
+  if (S.geom === 2) return [q.x + q.w / 2, q.y + q.w / 2];
+  return [q.x + q.w / 2, q.y + q.h / 2];
+}
+function nearest(from, dx, dy) {
+  const [fx, fy] = center(S.rects[from]);
+  let best = -1, bd = Infinity;
+  S.rects.forEach((q, i) => {
+    if (i === from) return;
+    const [cx, cy] = center(q);
+    const ax = cx - fx, ay = cy - fy;
+    const along = ax * dx + ay * dy, perp = Math.abs(ax * dy - ay * dx);
+    if (along <= 0 || perp > along) return;
+    const d = along + perp * 2;
+    if (d < bd) { bd = d; best = i; }
+  });
+  return best;
+}
+
 let qlOpen = false;
 async function quickLook(id) {
   if (id < 0) return;
@@ -531,6 +551,20 @@ document.addEventListener("keydown", (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === "z") { e.preventDefault(); undoManifest(lastStage); }
   if (e.key === " " && S.scanned) { e.preventDefault(); qlOpen ? quickLookHide() : quickLook(S.sel >= 0 ? S.sel : inspectId); }
   if (e.key === "Escape") { $("toast").hidden = true; hideTip(); quickLookHide(); }
+
+  if (!S.scanned) return;
+  const dirs = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+  if (dirs[e.key] && !(e.metaKey || e.ctrlKey)) {
+    e.preventDefault();
+    const si = selIndex();
+    const i = si < 0 ? 0 : nearest(si, ...dirs[e.key]);
+    if (i >= 0) { S.sel = S.rects[i].id; inspect(S.sel); paintOverlay(); if (qlOpen) quickLook(S.sel); }
+  }
+  if (e.key === "Enter" && S.sel >= 0) { invoke("node_info", { id: S.sel, size: S.size }).then((n) => { if (n.is_dir) go(S.sel); }); }
+  if (e.key === "Backspace" || ((e.metaKey || e.ctrlKey) && e.key === "ArrowUp")) { e.preventDefault(); if (S.crumbs?.length > 1) go(S.crumbs[S.crumbs.length - 2].id); }
+  if ((e.metaKey || e.ctrlKey) && (e.key === "=" || e.key === "+")) { $("depth").value = Math.min(8, S.levels + 1); $("depth").dispatchEvent(new Event("input")); }
+  if ((e.metaKey || e.ctrlKey) && e.key === "-") { $("depth").value = Math.max(1, S.levels - 1); $("depth").dispatchEvent(new Event("input")); }
+  if (e.key === "Delete" && S.sel >= 0) $("add-cleanup").click();
 });
 
 async function paintPending() {
@@ -727,6 +761,7 @@ $("dupe-go").onclick = () => {
 
 async function crumbs() {
   const list = await invoke("breadcrumb", { id: S.node });
+  S.crumbs = list;
   const el = $("crumbs");
   el.replaceChildren();
   list.forEach((c, i) => {
@@ -743,9 +778,22 @@ async function crumbs() {
 }
 
 async function go(id) {
+  const i = S.rects.findIndex((q) => q.id === id);
+  if (i >= 0 && S.geom === 0 && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    const q = S.rects[i];
+    image.style.transformOrigin = `${q.x}px ${q.y}px`;
+    image.style.transform = `scale(${S.css.w / Math.max(1, q.w)}, ${S.css.h / Math.max(1, q.h)})`;
+    image.style.opacity = "0.6";
+    await new Promise((r) => setTimeout(r, 180));
+  }
   S.node = id;
   await crumbs();
   await draw();
+  image.style.transition = "none";
+  image.style.transform = "none";
+  void image.offsetWidth;
+  image.style.transition = "";
+  image.style.opacity = "1";
 }
 
 let tipTimer = 0, tipUrl = "";
