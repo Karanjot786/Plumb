@@ -145,22 +145,9 @@ Staged items live 30 days by default. `plumb staged` lists every pending manifes
 
 ## Known issues
 
-Two defects sit in the staging gate. Both were reproduced by running the release binary
-against fixtures, and neither is fixed. Read them before trusting `commit` with anything
-you cannot lose.
-
-- A symlink planted inside the staging directory redirects `commit` outside staging. The
-  gate checks the prefix of a path and the type of the final component, and skips
-  everything between. Reaching the defect requires write access inside your own home
-  directory, so an attacker who reaches it already has your files. The defect still sits in
-  the only function deleting anything.
-- A symlink anywhere in the Application Support path makes `commit` refuse every item
-  permanently. The gate resolves the staging root to its real path while the manifest
-  stores the unresolved one, and the comparison then fails forever. Nothing gets lost.
-  `plumb restore` still returns your files. You lose the ability to free the space.
-
-Fix both together. Resolving both sides of the comparison closes the second defect and the
-first, but only when the resolved path reaches the removal call.
+None known. The two symlink defects in the staging gate were closed on 2026-09-10 by judging
+the resolved path; the fixtures are in docs/superpowers/plans/2026-09-10-ui-improvements.md,
+Task 5.
 
 ## CLI
 
