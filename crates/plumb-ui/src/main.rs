@@ -47,6 +47,9 @@ struct App {
     /// The running commit's cancel flag. One at a time: two deletes fighting
     /// for the disk help nobody, and the card has one progress row.
     commits: Mutex<Option<Arc<AtomicBool>>>,
+    /// Thumbnails keyed by (dev, ino, mtime, px), so editing a file invalidates
+    /// its own entry without a sweep.
+    thumbs: Mutex<std::collections::HashMap<(u64, u64, u32, u32), Vec<u8>>>,
     watch: Mutex<Option<Box<dyn plumb_core::watch::Watcher + Send>>>,
 }
 
@@ -518,6 +521,50 @@ fn cleanup_plan(ids: Vec<NodeId>, state: tauri::State<'_, App>) -> Result<PlanOu
             .collect(),
         total_bytes: p.total_bytes,
     })
+}
+
+fn abs(l: &Loaded, id: NodeId) -> Option<PathBuf> {
+    let root = plumb_core::blocklist::canon_keep_link(Path::new(&l.root_path));
+    clean::abs_of(&root, &l.tree, id)
+}
+
+#[cfg(target_os = "macos")]
+fn make_thumb(p: &Path, px: u32) -> Option<Vec<u8>> {
+    // ponytail: qlmanage spawns a process per thumbnail; QLThumbnailGenerator
+    // through objc2-quick-look-thumbnailing is the in-process upgrade if hover
+    // ever feels slow. Requests only start after the 250 ms hover delay.
+    let dir = std::env::temp_dir().join(format!("plumb-thumb-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).ok()?;
+    std::process::Command::new("qlmanage").args(["-t", "-s"]).arg(px.to_string())
+        .arg("-o").arg(&dir).arg(p).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+        .status().ok()?;
+    let out = dir.join(format!("{}.png", p.file_name()?.to_string_lossy()));
+    let bytes = std::fs::read(&out).ok();
+    let _ = std::fs::remove_file(&out);
+    bytes
+}
+
+// ponytail: no thumbnails off macOS. The tooltip is text-only there rather than
+// pulling in the `image` crate to decode a handful of formats Quick Look
+// already covers. Wire a platform thumbnailer here if Linux/Windows need one.
+#[cfg(not(target_os = "macos"))]
+fn make_thumb(_p: &Path, _px: u32) -> Option<Vec<u8>> { None }
+
+#[tauri::command]
+fn thumbnail(id: NodeId, px: u32, state: tauri::State<'_, App>) -> Response {
+    let g = state.loaded.lock().unwrap();
+    let Some(l) = g.as_ref() else { return Response::new(Vec::new()) };
+    let i = id as usize;
+    if i >= l.tree.len() || l.tree.flags[i].is_dir() { return Response::new(Vec::new()); }
+    let key = (l.tree.dev[i], l.tree.ino[i], l.tree.mtime[i], px);
+    let Some(p) = abs(l, id) else { return Response::new(Vec::new()) };
+    drop(g);
+    let mut cache = state.thumbs.lock().unwrap();
+    if let Some(b) = cache.get(&key) { return Response::new(b.clone()); }
+    let bytes = make_thumb(&p, px).unwrap_or_default();
+    if cache.len() >= 200 { cache.clear(); }   // ponytail: clear-all, not LRU; 200 PNGs at 96 px is ~2 MB
+    cache.insert(key, bytes.clone());
+    Response::new(bytes)
 }
 
 #[derive(Serialize)]
@@ -1089,6 +1136,7 @@ fn main() {
             cleanup_restore,
             cleanup_commit,
             cleanup_cancel,
+            thumbnail,
             snapshot_save,
             snapshot_list,
             snapshot_diff,
