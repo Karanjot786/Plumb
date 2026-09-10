@@ -23,7 +23,9 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+use walkdir::WalkDir;
 
 pub const DEFAULT_TTL_DAYS: u64 = 30;
 
@@ -60,6 +62,10 @@ pub struct StagedItem {
     pub dev: u64,
     pub ino: u64,
     pub mtime: u32,
+    /// A commit started on this item and did not finish. Bytes are
+    /// re-measured on list; Undo puts back what remains.
+    #[serde(default)]
+    pub partial: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -210,7 +216,11 @@ fn entry_exists(p: &Path) -> bool {
 
 /// Hard gate on every removal. Not a `debug_assert`: this is the check that
 /// stands between a bug in path handling and someone's home directory.
-fn assert_in_staging(p: &Path) -> io::Result<()> {
+/// Rules that judge a path as written, independent of what it resolves to.
+/// Split out so `resolved_in_staging` can apply them to the literal path while
+/// the prefix test below judges the canonicalized one. Never relaxed: every
+/// caller of `assert_in_staging` still runs these first.
+fn structural(p: &Path) -> io::Result<()> {
     let deny = |why: &str| {
         Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -226,6 +236,17 @@ fn assert_in_staging(p: &Path) -> io::Result<()> {
     if p.components().any(|c| matches!(c, Component::ParentDir)) {
         return deny("path contains a .. component");
     }
+    Ok(())
+}
+
+fn assert_in_staging(p: &Path) -> io::Result<()> {
+    let deny = |why: &str| {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("refusing to touch {} : {why}", p.display()),
+        ))
+    };
+    structural(p)?;
 
     let home = central()?.join("staging");
     let home = home.canonicalize().unwrap_or(home);
@@ -252,6 +273,24 @@ fn assert_in_staging(p: &Path) -> io::Result<()> {
         }
     }
     deny("not inside a staging directory")
+}
+
+/// The path `commit` is allowed to unlink. Structural rules run on the path as
+/// written; the prefix test runs on the path as resolved, so a symlink in the
+/// Application Support path no longer fails it forever, and a symlink planted
+/// inside staging resolves outside and is refused. A staged symlink is judged
+/// by its parent and unlinked as a link.
+fn resolved_in_staging(p: &Path) -> io::Result<PathBuf> {
+    structural(p)?;
+    let meta = fs::symlink_metadata(p)?;
+    if meta.file_type().is_symlink() {
+        let parent = p.parent().ok_or_else(|| io::Error::new(io::ErrorKind::PermissionDenied, "no parent"))?;
+        assert_in_staging(&parent.canonicalize()?)?;
+        return Ok(p.to_path_buf());
+    }
+    let real = p.canonicalize()?;
+    assert_in_staging(&real)?;
+    Ok(real)
 }
 
 // -------------------------------------------------------------------- plan
@@ -358,6 +397,7 @@ pub fn plan(tree: &Tree, root: &Path, ids: &[NodeId]) -> Plan {
             dev: ident.dev,
             ino: ident.ino,
             mtime: ident.mtime,
+            partial: false,
         });
     }
 
@@ -449,7 +489,12 @@ pub fn list_staged() -> io::Result<Vec<Manifest>> {
             continue;
         }
         let Ok(bytes) = fs::read(e.path()) else { continue };
-        let Ok(m) = serde_json::from_slice::<Manifest>(&bytes) else { continue };
+        let Ok(mut m) = serde_json::from_slice::<Manifest>(&bytes) else { continue };
+        for it in m.items.iter_mut().filter(|i| i.partial) {
+            it.bytes = WalkDir::new(&it.staged).follow_links(false).into_iter()
+                .filter_map(Result::ok).filter_map(|e| e.metadata().ok()).map(|md| alloc(&md)).sum();
+        }
+        m.total_bytes = m.items.iter().map(|i| i.bytes).sum();
         // An emptied manifest has already been restored.
         if !m.items.is_empty() {
             out.push(m);
@@ -505,6 +550,36 @@ pub fn restore(id: u64) -> io::Result<usize> {
 
 // ------------------------------------------------------------------ commit
 
+pub struct Progress<'a> { pub files: u64, pub bytes: u64, pub current: &'a Path }
+
+fn alloc(m: &fs::Metadata) -> u64 {
+    #[cfg(unix)] { use std::os::unix::fs::MetadataExt; m.blocks() * 512 }
+    #[cfg(not(unix))] { m.len() }
+}
+
+/// Post-order removal. Never follows a link. Ok(false) means cancelled midway.
+// ponytail: single-threaded. removefile(3) on macOS gives Finder's primitive
+// with per-file callbacks; four-way parallel unlink measured 1.75x on APFS
+// (research doc §1). Add either only after the rescan removal has been
+// measured in the app.
+fn remove_tree(root: &Path, cancel: &AtomicBool, on: &mut dyn FnMut(&Path, u64)) -> io::Result<bool> {
+    let meta = fs::symlink_metadata(root)?;
+    if !meta.is_dir() || meta.file_type().is_symlink() {
+        let b = alloc(&meta);
+        fs::remove_file(root)?;
+        on(root, b);
+        return Ok(true);
+    }
+    for e in WalkDir::new(root).follow_links(false).contents_first(true) {
+        if cancel.load(Ordering::Relaxed) { return Ok(false); }
+        let e = e?;
+        let b = alloc(&e.metadata()?);
+        if e.file_type().is_dir() { fs::remove_dir(e.path())?; } else { fs::remove_file(e.path())?; }
+        on(e.path(), b);
+    }
+    Ok(true)
+}
+
 /// What a commit actually did. `skipped` is never empty silently: an item this
 /// function declined to remove is an item the user still has, and they are told.
 #[derive(Debug, Default)]
@@ -513,63 +588,49 @@ pub struct Removal {
     pub skipped: Vec<(PathBuf, String)>,
 }
 
+pub fn commit(id: u64) -> io::Result<Removal> {
+    commit_with(id, &mut |_| {}, &AtomicBool::new(false))
+}
+
 /// Permanent removal. The only function in the project that deletes anything,
 /// and it refuses any path not inside a staging directory.
-pub fn commit(id: u64) -> io::Result<Removal> {
+pub fn commit_with(id: u64, on: &mut dyn FnMut(&Progress), cancel: &AtomicBool) -> io::Result<Removal> {
     let mut m = read_manifest(id)?;
     let mut out = Removal::default();
     let mut left: Vec<StagedItem> = Vec::new();
+    let (mut files, mut bytes) = (0u64, 0u64);
 
-    for item in &m.items {
-        if let Err(e) = assert_in_staging(&item.staged) {
-            out.skipped.push((item.staged.clone(), e.to_string()));
-            left.push(item.clone());
-            continue;
-        }
-        let meta = match fs::symlink_metadata(&item.staged) {
-            Ok(meta) => meta,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                // Already gone. Nothing to free, nothing to keep listed.
-                continue;
-            }
-            Err(e) => {
-                out.skipped.push((item.staged.clone(), e.to_string()));
-                left.push(item.clone());
-                continue;
-            }
+    for idx in 0..m.items.len() {
+        let item = m.items[idx].clone();
+        if cancel.load(Ordering::Relaxed) { left.push(item); continue; }
+        let real = match resolved_in_staging(&item.staged) {
+            Ok(p) => p,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue, // already gone
+            Err(e) => { out.skipped.push((item.staged.clone(), e.to_string())); left.push(item); continue; }
         };
-        let res = if meta.is_dir() && !meta.file_type().is_symlink() {
-            fs::remove_dir_all(&item.staged)
-        } else {
-            fs::remove_file(&item.staged)
-        };
+        // Mark before the first unlink so a crash mid-item leaves the truth on disk.
+        m.items[idx].partial = true;
+        write_manifest(&m)?;
+        let res = remove_tree(&real, cancel, &mut |p, b| {
+            files += 1; bytes += b;
+            on(&Progress { files, bytes, current: p });
+        });
         match res {
-            Ok(()) => out.freed += item.bytes,
-            Err(e) => {
-                out.skipped.push((item.staged.clone(), e.to_string()));
-                left.push(item.clone());
-            }
+            Ok(true) => out.freed += item.bytes,
+            Ok(false) => left.push(m.items[idx].clone()),
+            Err(e) => { out.skipped.push((item.staged.clone(), e.to_string())); left.push(m.items[idx].clone()); }
         }
     }
 
     let manifest_path = manifests_dir()?.join(format!("{id}.json"));
     if left.is_empty() {
-        // Everything went. Manifest and its now-empty payload directory last,
-        // so a failure partway through still leaves a manifest describing what
-        // remains.
-        if manifest_path.exists() {
-            fs::remove_file(&manifest_path)?;
-        }
+        if manifest_path.exists() { fs::remove_file(&manifest_path)?; }
         for item in &m.items {
             if let Some(parent) = item.staged.parent() {
-                if assert_in_staging(parent).is_ok() {
-                    let _ = fs::remove_dir(parent);
-                }
+                if assert_in_staging(parent).is_ok() { let _ = fs::remove_dir(parent); }
             }
         }
     } else {
-        // Keep the survivors addressable. Dropping the manifest here would
-        // orphan the very files we just failed to remove.
         m.total_bytes = left.iter().map(|i| i.bytes).sum();
         m.items = left;
         write_manifest(&m)?;
