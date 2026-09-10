@@ -604,6 +604,29 @@ fn quick_look(id: Option<NodeId>) -> Result<(), String> {
     Err("fallback".into())
 }
 
+#[tauri::command]
+fn reveal(id: NodeId, state: tauri::State<'_, App>) -> Result<(), String> {
+    let g = state.loaded.lock().unwrap();
+    let l = g.as_ref().ok_or("nothing scanned yet")?;
+    let p = abs(l, id).ok_or("no path")?;
+    // Paths are arguments, never a shell string.
+    let mut c = if cfg!(target_os = "macos") {
+        let mut c = std::process::Command::new("open"); c.arg("-R").arg(&p); c
+    } else if cfg!(windows) {
+        let mut c = std::process::Command::new("explorer"); c.arg(format!("/select,{}", p.display())); c
+    } else {
+        let mut c = std::process::Command::new("xdg-open"); c.arg(p.parent().unwrap_or(&p)); c
+    };
+    c.spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn open_privacy_settings() -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
+        .spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
 #[derive(Serialize)]
 struct StageOut {
     manifest: u64,
@@ -1175,6 +1198,8 @@ fn main() {
             cleanup_cancel,
             thumbnail,
             quick_look,
+            reveal,
+            open_privacy_settings,
             snapshot_save,
             snapshot_list,
             snapshot_diff,

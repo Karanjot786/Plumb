@@ -523,6 +523,8 @@ function quickLookHide() {
 }
 $("ql-btn").onclick = () => quickLook(S.sel >= 0 ? S.sel : inspectId);
 $("ql-close").onclick = quickLookHide;
+if (!/Mac/i.test(navigator.platform)) $("reveal-btn").textContent = "Reveal";
+$("reveal-btn").onclick = () => { const id = S.sel >= 0 ? S.sel : inspectId; if (id >= 0) invoke("reveal", { id }); };
 
 document.addEventListener("keydown", (e) => {
   if (e.target.matches("input, textarea")) return;
@@ -813,6 +815,13 @@ overlay.parentElement.addEventListener("click", (e) => {
   S.sel = S.rects[i].id;
   inspect(S.sel);
   paintOverlay();
+});
+
+overlay.parentElement.addEventListener("contextmenu", (e) => {
+  e.preventDefault();
+  const r = image.getBoundingClientRect();
+  const i = hit(e.clientX - r.left, e.clientY - r.top);
+  if (i >= 0) invoke("reveal", { id: S.rects[i].id });
 });
 
 // Navigation moved to double-click so a single click can mean "select".
