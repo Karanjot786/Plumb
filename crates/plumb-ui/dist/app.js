@@ -507,7 +507,7 @@ async function undoManifest(id) {
 document.addEventListener("keydown", (e) => {
   if (e.target.matches("input, textarea")) return;
   if ((e.metaKey || e.ctrlKey) && e.key === "z") { e.preventDefault(); undoManifest(lastStage); }
-  if (e.key === "Escape") { $("toast").hidden = true; }
+  if (e.key === "Escape") { $("toast").hidden = true; hideTip(); }
 });
 
 async function paintPending() {
@@ -725,6 +725,40 @@ async function go(id) {
   await draw();
 }
 
+let tipTimer = 0, tipUrl = "";
+function ago(secs) {
+  if (!secs) return "unknown";
+  const d = (Date.now() / 1000 - secs) / 86400;
+  return d < 1 ? "today" : d < 30 ? `${d | 0} days ago` : d < 365 ? `${(d / 30) | 0} months ago` : `${(d / 365) | 0} years ago`;
+}
+function hideTip() { clearTimeout(tipTimer); $("tip").hidden = true; if (tipUrl) { URL.revokeObjectURL(tipUrl); tipUrl = ""; } }
+function line(cls, text) { const d = document.createElement("div"); if (cls) d.className = cls; d.textContent = text; return d; }
+async function showTip(id, mx, my) {
+  let info; try { info = await invoke("node_info", { id, size: S.size }); } catch { return; }
+  if (S.hover < 0 || S.rects[S.hover]?.id !== id) return;
+  const badges = [info.shared && "shared", info.denied && "denied", info.staged && "staged"].filter(Boolean).join(" \u00b7 ");
+  const name = document.createElement("b"); name.textContent = info.name;
+  $("tip-body").replaceChildren(
+    name,
+    line("path muted", mid(info.path, 60)),
+    line("", human(info.bytes) + (info.is_dir ? ` \u00b7 ${info.files.toLocaleString()} files \u00b7 ${info.dirs.toLocaleString()} folders` : "")),
+    line("muted", `modified ${ago(info.mtime)}${badges ? " \u00b7 " + badges : ""}`),
+  );
+  const img = $("tip-img"); img.hidden = true;
+  const tip = $("tip"); tip.hidden = false;
+  const st = $("stage").getBoundingClientRect();
+  tip.style.left = Math.min(mx + 12, st.width - tip.offsetWidth - 8) + "px";
+  tip.style.top = Math.min(my + 12, st.height - tip.offsetHeight - 8) + "px";
+  if (!info.is_dir) {
+    const buf = await invoke("thumbnail", { id, px: 96 });
+    if (buf.byteLength && !$("tip").hidden && S.rects[S.hover]?.id === id) {
+      if (tipUrl) URL.revokeObjectURL(tipUrl);
+      tipUrl = URL.createObjectURL(new Blob([buf], { type: "image/png" }));
+      img.src = tipUrl; img.hidden = false;
+    }
+  }
+}
+
 overlay.parentElement.addEventListener("mousemove", (e) => {
   if (!S.rects.length) return;
   const r = image.getBoundingClientRect();
@@ -736,10 +770,16 @@ overlay.parentElement.addEventListener("mousemove", (e) => {
   // inspector belongs to the selection - otherwise moving the mouse toward
   // "Add to Cleanup" would silently retarget it.
   if (i >= 0 && S.sel < 0) inspect(S.rects[i].id);
+  hideTip();
+  if (i >= 0) {
+    const mx = e.clientX - r.left, my = e.clientY - r.top;
+    tipTimer = setTimeout(() => showTip(S.rects[i].id, mx, my), 250);
+  }
 });
 
 overlay.parentElement.addEventListener("mouseleave", () => {
   S.hover = -1;
+  hideTip();
   paintOverlay();
 });
 
@@ -747,6 +787,7 @@ overlay.parentElement.addEventListener("click", (e) => {
   if (!S.rects.length) return;
   const r = image.getBoundingClientRect();
   const i = hit(e.clientX - r.left, e.clientY - r.top);
+  hideTip();
   if (i < 0) { S.sel = -1; paintOverlay(); return; }
   S.sel = S.rects[i].id;
   inspect(S.sel);

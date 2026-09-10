@@ -264,3 +264,9 @@ button.danger { color: #a8443a; }
 #toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); display: flex; gap: 12px; align-items: center;
   background: #1d1a15; color: #fdfaf2; padding: 10px 14px; border-radius: 10px; font-size: 13px; box-shadow: 0 6px 24px rgba(0,0,0,.25); z-index: 30; }
 #toast button { background: transparent; color: #f0c9a8; border: 1px solid #5a4a3a; border-radius: 7px; padding: 4px 10px; }
+
+#tip { position: absolute; z-index: 20; pointer-events: none; display: flex; gap: 10px; max-width: 360px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 12px; box-shadow: 0 4px 16px rgba(0,0,0,.12); }
+#tip img { width: 96px; height: 96px; object-fit: contain; border-radius: 4px; background: var(--paper); }
+#tip b { display: block; margin-bottom: 2px; }
+#tip .path { font-size: 11px; }
