@@ -153,8 +153,11 @@ function applyOverview(ov) {
   const other = Math.max(0, Number(ov.volume_used) - scanned);
   const a = (scanned / total) * 360;
   const b = a + (other / total) * 360;
+  const staged = Math.min(Number(S.stagedBytes || 0), total);
+  const c = b + (staged / total) * 360;
   $("donut").style.background =
-    `conic-gradient(#a8734a 0 ${a}deg, #cdbfa6 ${a}deg ${b}deg, #e8e2d4 ${b}deg 360deg)`;
+    `conic-gradient(#a8734a 0 ${a}deg, #cdbfa6 ${a}deg ${b}deg, #d9c48a ${b}deg ${c}deg, #e8e2d4 ${c}deg 360deg)`;
+  $("v-staged").textContent = human(staged);
   $("v-scanned").textContent = human(scanned);
   $("v-other").textContent = human(other);
   $("v-free").textContent = human(ov.volume_free);
@@ -440,6 +443,9 @@ $("stage-btn").onclick = async () => {
   $("tray-total").textContent = "staging...";
   try {
     const r = await invoke("cleanup_stage", { ids: [...tray.keys()], label: "cleanup" });
+    lastStage = r.manifest;
+    toast(`Staged ${human(r.total_bytes)} \u00b7 ${r.moved} items` + (r.skipped ? ` \u00b7 ${r.skipped} changed, left in place` : ""),
+          "Undo", () => undoManifest(r.manifest));
     tray.clear();
     paintTray();
     $("results").hidden = true;
@@ -461,6 +467,31 @@ $("stage-btn").onclick = async () => {
   }
 };
 
+let lastStage = 0;      // manifest id \u2318Z undoes, until the next stage or any commit
+let toastTimer = 0;
+function toast(text, action, fn) {
+  clearTimeout(toastTimer);
+  $("toast-text").textContent = text;
+  const b = $("toast-act");
+  b.hidden = !action;
+  if (action) { b.textContent = action; b.onclick = () => { $("toast").hidden = true; fn(); }; }
+  $("toast").hidden = false;
+  toastTimer = setTimeout(() => { $("toast").hidden = true; }, 10000);
+}
+async function undoManifest(id) {
+  if (!id) return;
+  lastStage = 0;
+  const n = await invoke("cleanup_restore", { id });
+  inspectId = -1; S.sel = -1;
+  await paintPending(); await refreshOverview(); await draw();
+  toast(`Restored ${n} items`);
+}
+document.addEventListener("keydown", (e) => {
+  if (e.target.matches("input, textarea")) return;
+  if ((e.metaKey || e.ctrlKey) && e.key === "z") { e.preventDefault(); undoManifest(lastStage); }
+  if (e.key === "Escape") { $("toast").hidden = true; }
+});
+
 async function paintPending() {
   let list = [];
   try { list = await invoke("cleanup_list"); } catch { return; }
@@ -475,20 +506,13 @@ async function paintPending() {
     acts.className = "acts";
     const undo = document.createElement("button");
     undo.textContent = "Undo";
-    undo.onclick = async () => {
-      const n = await invoke("cleanup_restore", { id: m.id });
-      $("status").textContent = `restored ${n} items`;
-      await paintPending();
-      inspectId = -1;
-      S.sel = -1;
-      await refreshOverview();
-      await draw();
-    };
+    undo.onclick = () => undoManifest(m.id);
     const del = document.createElement("button");
     del.className = "danger";
     del.textContent = "Commit";
     del.onclick = async () => {
       if (!confirm(`Permanently delete ${m.items} items (${human(m.total_bytes)})? This cannot be undone.`)) return;
+      lastStage = 0;
       const ch = new window.__TAURI__.core.Channel();
       ch.onmessage = (p) => {
         n.textContent = `Deleting · ${p.files.toLocaleString()} files · ${human(p.bytes)} of ${human(m.total_bytes)} · ${mid(p.current, 48)}`;
@@ -500,6 +524,7 @@ async function paintPending() {
       try {
         const r = await invoke("cleanup_commit", { id: m.id, onProgress: ch });
         $("status").textContent = `freed ${human(r.freed)}`;
+        toast(`Freed ${human(r.freed)}`);
         if (r.skipped.length) {
           const ul = document.createElement("ul");
           ul.className = "muted tiny";
@@ -514,6 +539,7 @@ async function paintPending() {
     li.append(n, acts);
     return li;
   }));
+  S.stagedBytes = list.reduce((n, m) => n + Number(m.total_bytes), 0);
 }
 
 // ---------------------------------------------------------------- stage 5

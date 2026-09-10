@@ -260,3 +260,7 @@ button.danger { color: #a8443a; }
 /* Size column stays in one place whether or not a row carries an evidence
    line under its path. */
 #app-detail li .b, #sheet-body li .b { min-width: 76px; text-align: right; align-self: flex-start; }
+
+#toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); display: flex; gap: 12px; align-items: center;
+  background: #1d1a15; color: #fdfaf2; padding: 10px 14px; border-radius: 10px; font-size: 13px; box-shadow: 0 6px 24px rgba(0,0,0,.25); z-index: 30; }
+#toast button { background: transparent; color: #f0c9a8; border: 1px solid #5a4a3a; border-radius: 7px; padding: 4px 10px; }
