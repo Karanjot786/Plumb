@@ -41,6 +41,9 @@ struct App {
     /// whenever the apps list is rebuilt, which is what makes a stale sheet
     /// fail loudly instead of acting on a re-sorted index.
     plans: Mutex<std::collections::HashMap<u64, plumb_core::apps::CleanupPlan>>,
+    /// Manifest id -> node ids flagged REMOVED for it. Session-only; after a
+    /// restart the next scan reads the disk, which is the truth.
+    staged_ids: Mutex<std::collections::HashMap<u64, Vec<NodeId>>>,
     watch: Mutex<Option<Box<dyn plumb_core::watch::Watcher + Send>>>,
 }
 
@@ -519,23 +522,27 @@ fn cleanup_stage(
     label: String,
     state: tauri::State<'_, App>,
 ) -> Result<StageOut, String> {
-    let g = state.loaded.lock().unwrap();
-    let l = g.as_ref().ok_or("nothing scanned yet")?;
+    let mut g = state.loaded.lock().unwrap();
+    let l = g.as_mut().ok_or("nothing scanned yet")?;
     let p = plan_for(l, &ids);
     let planned = p.staged.len();
-    let refused = p
-        .refused
-        .iter()
-        .map(|(path, why)| (path.display().to_string(), why.to_string()))
-        .collect();
+    let refused = p.refused.iter()
+        .map(|(path, why)| (path.display().to_string(), why.to_string())).collect();
     let m = clean::stage(&p, &label).map_err(|e| e.to_string())?;
-    Ok(StageOut {
-        manifest: m.id,
-        moved: m.items.len(),
-        skipped: planned - m.items.len(),
-        total_bytes: m.total_bytes,
-        refused,
-    })
+
+    // Ids drop_covered folded into an ancestor match no item; they sit inside
+    // that ancestor's range and are flagged with it.
+    let root = plumb_core::blocklist::canon_keep_link(Path::new(&l.root_path));
+    let flagged: Vec<NodeId> = ids.iter().copied()
+        .filter(|&id| clean::abs_of(&root, &l.tree, id)
+            .map_or(false, |p| m.items.iter().any(|it| it.original == p)))
+        .collect();
+    for &id in &flagged { l.tree.set_removed(id, true); }
+    aggregate(&mut l.tree);
+    if !flagged.is_empty() { state.staged_ids.lock().unwrap().insert(m.id, flagged); }
+
+    Ok(StageOut { manifest: m.id, moved: m.items.len(), skipped: planned - m.items.len(),
+                  total_bytes: m.total_bytes, refused })
 }
 
 #[derive(Serialize)]
@@ -566,8 +573,23 @@ fn cleanup_list() -> Result<Vec<ManifestOut>, String> {
 }
 
 #[tauri::command]
-fn cleanup_restore(id: u64) -> Result<usize, String> {
-    clean::restore(id).map_err(|e| e.to_string())
+fn cleanup_restore(id: u64, state: tauri::State<'_, App>) -> Result<usize, String> {
+    let n = clean::restore(id).map_err(|e| e.to_string())?;
+    let left: Vec<PathBuf> = clean::read_manifest(id)
+        .map(|m| m.items.into_iter().map(|i| i.original).collect()).unwrap_or_default();
+    let mut g = state.loaded.lock().unwrap();
+    let mut map = state.staged_ids.lock().unwrap();
+    if let (Some(l), Some(ids)) = (g.as_mut(), map.remove(&id)) {
+        let root = plumb_core::blocklist::canon_keep_link(Path::new(&l.root_path));
+        let mut still = Vec::new();
+        for nid in ids {
+            let back = clean::abs_of(&root, &l.tree, nid).map_or(true, |p| !left.contains(&p));
+            if back { l.tree.set_removed(nid, false) } else { still.push(nid) }
+        }
+        aggregate(&mut l.tree);
+        if !still.is_empty() { map.insert(id, still); }
+    }
+    Ok(n)
 }
 
 #[derive(Serialize)]

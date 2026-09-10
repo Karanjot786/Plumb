@@ -258,7 +258,7 @@ fn assert_in_staging(p: &Path) -> io::Result<()> {
 
 /// Absolute path of a node. `Tree::path` is rooted at the scan root's own
 /// basename, so the parent of the scan root is what it must be joined onto.
-fn abs_of(root: &Path, tree: &Tree, id: NodeId) -> Option<PathBuf> {
+pub fn abs_of(root: &Path, tree: &Tree, id: NodeId) -> Option<PathBuf> {
     let base = root.parent()?;
     let p = base.join(tree.path(id));
     debug_assert!(p.starts_with(root), "{} escaped scan root {}", p.display(), root.display());

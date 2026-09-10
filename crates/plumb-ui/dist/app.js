@@ -448,7 +448,10 @@ $("stage-btn").onclick = async () => {
       `staged ${r.moved} items, ${human(r.total_bytes)}` +
       (r.skipped ? ` (${r.skipped} changed, skipped)` : "");
     await paintPending();
-    await startScan($("path").value.trim());
+    inspectId = -1;
+    S.sel = -1;
+    await refreshOverview();
+    await draw();
   } catch (e) {
     $("tray-total").textContent = String(e);
   }
@@ -471,7 +474,10 @@ async function paintPending() {
       const n = await invoke("cleanup_restore", { id: m.id });
       $("status").textContent = `restored ${n} items`;
       await paintPending();
-      await startScan($("path").value.trim());
+      inspectId = -1;
+      S.sel = -1;
+      await refreshOverview();
+      await draw();
     };
     const del = document.createElement("button");
     del.className = "danger";
