@@ -12,8 +12,10 @@ impl Flags {
     pub const SYMLINK: u8 = 1 << 1;
     pub const DENIED: u8 = 1 << 2;
     pub const SHARED: u8 = 1 << 3;
+    pub const REMOVED: u8 = 1 << 4;
     pub fn has(self, bit: u8) -> bool { self.0 & bit != 0 }
     pub fn is_dir(self) -> bool { self.has(Self::DIR) }
+    pub fn is_removed(self) -> bool { self.has(Self::REMOVED) }
 }
 
 /// DFS pre-order columnar arena. The subtree of node `i` is the contiguous
@@ -100,6 +102,15 @@ impl Tree {
         parts.join("/")
     }
 
+    /// Marks a subtree as staged out of the tree. Flags only: call `aggregate`
+    /// afterwards so every ancestor's totals drop with it.
+    pub fn set_removed(&mut self, id: NodeId, on: bool) {
+        let (s, e) = (id as usize, (id + self.subtree_len[id as usize]) as usize);
+        for f in &mut self.flags[s..e] {
+            if on { f.0 |= Flags::REMOVED } else { f.0 &= !Flags::REMOVED }
+        }
+    }
+
     pub fn descendants(&self, id: NodeId) -> Range<NodeId> {
         (id + 1)..(id + self.subtree_len[id as usize])
     }
@@ -108,10 +119,12 @@ impl Tree {
         let end = id + self.subtree_len[id as usize];
         let mut cur = id + 1;
         std::iter::from_fn(move || {
-            if cur >= end { return None; }
-            let out = cur;
-            cur += self.subtree_len[out as usize];
-            Some(out)
+            while cur < end {
+                let out = cur;
+                cur += self.subtree_len[out as usize];
+                if !self.flags[out as usize].is_removed() { return Some(out); }
+            }
+            None
         })
     }
 
