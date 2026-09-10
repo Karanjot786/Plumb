@@ -20,6 +20,7 @@ pub fn quick_wins(t: &Tree) -> Vec<Win> {
     let mut i: NodeId = 0;
     while (i as usize) < t.len() {
         let idx = i as usize;
+        if t.flags[idx].is_removed() { i += t.subtree_len[idx]; continue; }
         if t.flags[idx].is_dir() {
             if let Some((_, label)) = RULES.iter().find(|(n, _)| *n == t.name(i)) {
                 out.push(Win { label, id: i, bytes: t.sub_excl[idx], items: t.sub_files[idx] });

@@ -171,6 +171,7 @@ fn build_overview(l: &Loaded, size: SizeMode) -> Overview {
     let mut shared = 0u32;
     for i in 0..t.len() {
         let id = i as NodeId;
+        if t.flags[i].has(Flags::REMOVED) { continue; }
         if t.flags[i].has(Flags::DENIED) {
             denied += 1;
         }
@@ -372,6 +373,7 @@ struct Info {
     pct_parent: f64,
     shared: bool,
     denied: bool,
+    staged: bool,
     children: Vec<Child>,
 }
 
@@ -427,6 +429,7 @@ fn node_info(id: NodeId, size: u8, state: tauri::State<'_, App>) -> Result<Info,
         pct_parent: bytes as f64 * 100.0 / parent_total as f64,
         shared: t.flags[i].has(Flags::SHARED),
         denied: t.flags[i].has(Flags::DENIED),
+        staged: t.flags[i].has(Flags::REMOVED),
         children,
     })
 }

@@ -123,7 +123,8 @@ pub fn find(t: &Tree, root: &Path, min_size: u64) -> Vec<Group> {
     let mut by_size: HashMap<u64, Vec<NodeId>> = HashMap::new();
     for id in 0..t.len() as NodeId {
         let i = id as usize;
-        if t.flags[i].is_dir() || t.flags[i].has(Flags::SYMLINK) || t.flags[i].has(Flags::DENIED) {
+        if t.flags[i].is_dir() || t.flags[i].has(Flags::SYMLINK) || t.flags[i].has(Flags::DENIED)
+            || t.flags[i].has(Flags::REMOVED) {
             continue;
         }
         let size = t.logical[i];

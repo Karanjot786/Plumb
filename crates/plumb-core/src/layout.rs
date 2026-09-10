@@ -474,12 +474,10 @@ fn mind_arm(
 pub fn ranked(t: &Tree, root: NodeId, o: &Opts) -> Vec<NodeId> {
     let mut v: Vec<NodeId> = match o.scope {
         Scope::Here => t.children(root).collect(),
-        Scope::FilesAnywhere => {
-            t.descendants(root).filter(|&i| !t.flags[i as usize].is_dir()).collect()
-        }
-        Scope::FoldersAnywhere => {
-            t.descendants(root).filter(|&i| t.flags[i as usize].is_dir()).collect()
-        }
+        Scope::FilesAnywhere => t.descendants(root)
+            .filter(|&i| !t.flags[i as usize].is_dir() && !t.flags[i as usize].is_removed()).collect(),
+        Scope::FoldersAnywhere => t.descendants(root)
+            .filter(|&i| t.flags[i as usize].is_dir() && !t.flags[i as usize].is_removed()).collect(),
     };
     v.sort_unstable_by(|&a, &b| size_of(t, b, o.size).cmp(&size_of(t, a, o.size)).then(a.cmp(&b)));
     v.truncate(MAX_RECTS);
