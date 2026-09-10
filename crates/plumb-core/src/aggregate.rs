@@ -71,6 +71,11 @@ pub fn aggregate_with_private(t: &mut Tree, private: &[Option<u64>]) {
             t.flags[m as usize].0 |= Flags::SHARED;
         }
         t.flags[members[0] as usize].0 |= Flags::SHARED;
+        // A member in staging still pins the family's extents on this volume, so
+        // deleting the LCA inside the tree frees nothing until that manifest
+        // commits. Credit nowhere: under-reporting is the safe direction, the same
+        // one the diverged-clone residual takes below.
+        if members.iter().any(|&m| t.flags[m as usize].is_removed()) { continue; }
         credit_at[anc as usize] += bytes;
     }
 
@@ -81,6 +86,7 @@ pub fn aggregate_with_private(t: &mut Tree, private: &[Option<u64>]) {
     t.sub_dirs = vec![0; n];
 
     for i in (0..n).rev() {
+        if t.flags[i].is_removed() { continue; }
         let shared = t.flags[i].has(Flags::SHARED);
         t.sub_logical[i] += t.logical[i];
         t.sub_blocks[i] += t.blocks[i];
@@ -119,16 +125,20 @@ pub fn aggregate_with_private(t: &mut Tree, private: &[Option<u64>]) {
     #[cfg(debug_assertions)]
     {
         let credited: u64 = credit_at.iter().sum();
-        let families: u64 = fam.values().filter(|m| m.len() >= 2)
+        let families: u64 = fam.values()
+            .filter(|m| m.len() >= 2 && !m.iter().any(|&x| t.flags[x as usize].is_removed()))
             .map(|m| t.blocks[m[0] as usize]).sum();
         debug_assert_eq!(credited, families, "family bytes credited more or less than once");
 
         for i in 0..n {
+            if t.flags[i].is_removed() { continue; }
             debug_assert!(t.sub_excl[i] <= t.sub_blocks[i],
                 "node {i}: freeable {} exceeds allocated {}", t.sub_excl[i], t.sub_blocks[i]);
             let kids: u64 = t.children(i as NodeId).map(|c| t.sub_blocks[c as usize]).sum();
-            debug_assert_eq!(t.sub_blocks[i], kids + t.blocks[i],
-                "node {i}: children do not sum to parent");
+            debug_assert_eq!(t.sub_blocks[i], kids + t.blocks[i], "node {i}: children do not sum to parent");
+            let kid_files: u32 = t.children(i as NodeId).map(|c| t.sub_files[c as usize]).sum();
+            let own = if t.flags[i].is_dir() { 0 } else { 1 };
+            debug_assert_eq!(t.sub_files[i], kid_files + own, "node {i}: file count disagrees with children");
         }
     }
 }
