@@ -137,6 +137,22 @@ fn targets() -> Vec<Target> {
     out
 }
 
+#[derive(Serialize)]
+struct VolumeInfo {
+    total: u64,
+    free: u64,
+    used: u64,
+}
+
+/// Disk totals without a scan, for the welcome screen. Defaults to the home
+/// volume.
+#[tauri::command]
+fn volume_info(path: Option<String>) -> Result<VolumeInfo, String> {
+    let p = path.map(PathBuf::from).unwrap_or_else(home);
+    let v = volume_of(&p).map_err(|e| e.to_string())?;
+    Ok(VolumeInfo { total: v.total, free: v.free, used: v.used })
+}
+
 // ---------------------------------------------------------------- overview
 
 #[derive(Serialize)]
@@ -1202,6 +1218,7 @@ fn main() {
         .manage(App::default())
         .invoke_handler(tauri::generate_handler![
             targets,
+            volume_info,
             scan_dir,
             overview,
             render_view,

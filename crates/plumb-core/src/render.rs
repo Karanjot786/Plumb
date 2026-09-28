@@ -20,17 +20,19 @@ use tiny_skia::{
 
 type Rgb = (u8, u8, u8);
 
-pub const PAPER: Rgb = (0xF7, 0xF4, 0xEC);
-pub const INK: Rgb = (0x3A, 0x35, 0x2C);
-const FAINT: Rgb = (0x9A, 0x92, 0x84);
+// Dark ground, Apple dark-mode system colours. `PAPER` is the canvas and `INK`
+// the text; every view dims by mixing toward `PAPER`, so dimming now darkens.
+pub const PAPER: Rgb = (0x1C, 0x1C, 0x1E);
+pub const INK: Rgb = (0xF2, 0xF2, 0xF7);
+const FAINT: Rgb = (0x8E, 0x8E, 0x93);
 
-const VIDEO: Rgb = (0xD9, 0x8A, 0x8A);
-const AUDIO: Rgb = (0x8A, 0x9B, 0xD9);
-const IMAGE: Rgb = (0x8A, 0xC5, 0xA8);
-const DOCUMENT: Rgb = (0xD9, 0xC4, 0x8A);
-const DEVELOPER: Rgb = (0xA8, 0xC5, 0x8A);
-const ARCHIVE: Rgb = (0xD9, 0xA8, 0x7A);
-const OTHER: Rgb = (0xC4, 0xBD, 0xB0);
+const VIDEO: Rgb = (0xFF, 0x37, 0x5F);
+const AUDIO: Rgb = (0x5E, 0x5C, 0xE6);
+const IMAGE: Rgb = (0x30, 0xB0, 0xC7);
+const DOCUMENT: Rgb = (0xFF, 0x9F, 0x0A);
+const DEVELOPER: Rgb = (0x0A, 0x84, 0xFF);
+const ARCHIVE: Rgb = (0xBF, 0x5A, 0xF2);
+const OTHER: Rgb = (0x63, 0x63, 0x66);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
@@ -115,12 +117,12 @@ pub fn kind_of(name: &str) -> Kind {
 
 /// Fresh to stale, one entry per `layout::AGE_BUCKETS` bucket.
 const AGE_RAMP: [Rgb; 6] = [
-    (0x8A, 0xC5, 0xA8),
-    (0xA8, 0xC5, 0x8A),
-    (0xD9, 0xC4, 0x8A),
-    (0xD9, 0xA8, 0x7A),
-    (0xD9, 0x8A, 0x8A),
-    (0xB0, 0x8A, 0x94),
+    (0x30, 0xD1, 0x58),
+    (0xA3, 0xD9, 0x4B),
+    (0xFF, 0xD6, 0x0A),
+    (0xFF, 0x9F, 0x0A),
+    (0xFF, 0x45, 0x3A),
+    (0x9A, 0x6B, 0x8F),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -133,6 +135,14 @@ pub enum ColorMode {
 fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
     let f = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round().clamp(0.0, 255.0) as u8;
     (f(a.0, b.0), f(a.1, b.1), f(a.2, b.2))
+}
+
+/// Label colour that reads on `bg`: dark text on light fills (orange, yellow,
+/// teal), light text on everything else.
+fn ink_on(bg: Rgb) -> Rgb {
+    let l = 0.2126 * bg.0 as f32 + 0.7152 * bg.1 as f32 + 0.0722 * bg.2 as f32;
+    debug_assert!(PAPER.0 < 0x40 && INK.0 > 0xC0, "ink_on assumes a dark PAPER and a light INK");
+    if l > 150.0 { PAPER } else { INK }
 }
 
 fn hsl(h: f32, s: f32, l: f32) -> Rgb {
@@ -163,12 +173,12 @@ fn color_of(t: &Tree, id: NodeId, mode: ColorMode, now: u32) -> Rgb {
             }
         }
         ColorMode::ByFolder => {
-            // Muted, desaturated band only: the paper ground stays the calmest
-            // thing on screen.
+            // Mid saturation: vivid enough to separate siblings on the dark
+            // ground, calm enough that type and age colours still read louder.
             let p = t.parent[i];
             let seed = if p == crate::NO_PARENT { id } else { p };
             let h = (seed.wrapping_mul(2_654_435_761) >> 8) % 360;
-            hsl(h as f32, 0.30, 0.70)
+            hsl(h as f32, 0.45, 0.50)
         }
         ColorMode::ByAge => {
             let m = t.mtime[i];
@@ -418,11 +428,13 @@ fn draw_treemap(c: &mut Canvas, t: &Tree, rects: &[Rect], dim: &[bool], o: &Rend
                 c.text(r.x + 4.0, y, &s, INK);
             }
         } else if let Some(s) = fit(c, name, r.w - 8.0) {
-            c.text(r.x + 4.0, r.y + 4.0, &s, INK);
+            let f = fill_of(t, r, dim[i], o);
+            let ink = ink_on(f);
+            c.text(r.x + 4.0, r.y + 4.0, &s, ink);
             if r.h > 8.0 + c.line_h() * 2.0 {
                 let size = human(size_of(t, r.id, o.lay.size));
                 if let Some(sz) = fit(c, &size, r.w - 8.0) {
-                    c.text(r.x + 4.0, r.y + 6.0 + c.line_h(), &sz, mix(INK, PAPER, 0.35));
+                    c.text(r.x + 4.0, r.y + 6.0 + c.line_h(), &sz, mix(ink, f, 0.35));
                 }
             }
         }
@@ -508,7 +520,8 @@ fn draw_bubbles(c: &mut Canvas, t: &Tree, rects: &[Rect], dim: &[bool], o: &Rend
         let Some(s) = fit(c, t.name(r.id), rad * 1.5) else { continue };
         let w = c.text_w(s.chars().count());
         let y = if container[i] { cy - rad * 0.82 } else { cy - c.line_h() / 2.0 };
-        c.text(cx - w / 2.0, y, &s, INK);
+        let ink = if container[i] { INK } else { ink_on(fill_of(t, r, dim[i], o)) };
+        c.text(cx - w / 2.0, y, &s, ink);
     }
 }
 
