@@ -23,6 +23,10 @@ const S = {
   css: { w: 0, h: 0 },
 };
 
+// Storage panels, one visible at a time inside #center.
+const PANELS = ["map", "wins", "types", "dupes", "snaps", "watch", "cleanup"];
+let panel = "map";
+
 const $ = (id) => document.getElementById(id);
 const image = $("image");
 const overlay = $("overlay");
@@ -48,20 +52,82 @@ function when(secs) {
 
 // ------------------------------------------------------------------- chrome
 
-VIEWS.forEach((name, i) => {
+// Four views on the row, the rest behind "More". Indices into VIEWS.
+const MAIN = [0, 2, 1, 7];
+const MORE = [3, 4, 5, 6];
+
+function viewBtn(i) {
   const b = document.createElement("button");
-  b.textContent = name;
-  b.onclick = () => {
-    S.view = i;
-    $("scope-wrap").hidden = i !== 6;
-    paintTabs();
-    draw();
-  };
-  $("tabs").append(b);
-});
+  b.textContent = VIEWS[i];
+  b.dataset.view = i;
+  b.onclick = () => setView(i);
+  return b;
+}
+MAIN.forEach((i) => $("tabs").append(viewBtn(i)));
+MORE.forEach((i) => $("more-pop").append(viewBtn(i)));
+
+function setView(i) {
+  S.view = i;
+  $("scope-wrap").hidden = i !== 6;
+  closePops();
+  paintTabs();
+  draw();
+}
 
 function paintTabs() {
-  [...$("tabs").children].forEach((b, i) => b.classList.toggle("on", i === S.view));
+  document.querySelectorAll("[data-view]").forEach((b) => b.classList.toggle("on", +b.dataset.view === S.view));
+  const more = MORE.includes(S.view);
+  $("more-btn").textContent = `${more ? VIEWS[S.view] : "More"} ▾`;
+  $("more-btn").classList.toggle("on", more);
+}
+
+function setOpen(el, on) { el.toggleAttribute("data-open", on); }
+// Set by ask() (Task 4) so Cancel, Escape and a backdrop click resolve it false.
+let sheetCancel = null;
+function closeSheet() {
+  setOpen($("sheet"), false);
+  const c = sheetCancel;
+  sheetCancel = null;
+  if (c) c();
+}
+function closePops() { document.querySelectorAll(".pop[data-open]").forEach((p) => setOpen(p, false)); }
+function popover(btn, pop, onOpen) {
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    const open = !pop.hasAttribute("data-open");
+    closePops();
+    setOpen(pop, open);
+    if (open && onOpen) onOpen();
+  };
+  pop.onclick = (e) => e.stopPropagation();
+}
+popover($("more-btn"), $("more-pop"));
+popover($("display-btn"), $("display-pop"));
+document.addEventListener("click", closePops);
+
+const onMap = () => M.mode === "storage" && panel === "map" && S.scanned && !scanning;
+
+function showPanel(name) {
+  panel = name;
+  closePops();
+  for (const p of PANELS) $("panel-" + p).hidden = p !== name;
+  $("inspector").hidden = name !== "map";
+  document.querySelectorAll("#rail [data-panel]").forEach((b) => b.classList.toggle("on", b.dataset.panel === name));
+  document.querySelectorAll("#targets button").forEach((b) =>
+    b.classList.toggle("on", name === "map" && S.scanned && b.title === $("path").value));
+  if (name === "cleanup") paintPending();
+}
+document.querySelectorAll("#rail [data-panel]").forEach((b) => { b.onclick = () => showPanel(b.dataset.panel); });
+
+// Inside #panel-map: welcome before any scan, progress while scanning, map after.
+function paintHome() {
+  $("welcome").hidden = S.scanned || scanning;
+  $("scanning").hidden = !scanning;
+  $("mapview").hidden = !S.scanned || scanning;
+  document.querySelectorAll("[data-needs-scan]").forEach((b) => {
+    b.disabled = !S.scanned || scanning;
+    b.title = b.disabled ? "Scan a folder first" : "";
+  });
 }
 
 $("color").onchange = (e) => { S.color = +e.target.value; draw(); };
@@ -73,7 +139,8 @@ $("depth").oninput = (e) => {
   draw();
 };
 $("filter").oninput = (e) => { S.filter = e.target.value; draw(); };
-$("go").onclick = () => scanning ? invoke("scan_cancel") : startScan($("path").value.trim());
+$("go").onclick = () => startScan($("path").value.trim());
+$("scan-cancel").onclick = () => invoke("scan_cancel");
 $("pick").onclick = async () => {
   // Invoked as a plugin command so the page needs no bundled JS binding.
   const dir = await invoke("plugin:dialog|open", {
@@ -102,42 +169,54 @@ let scanning = false;
 $("fda-open").onclick = () => invoke("open_privacy_settings");
 $("fda-x").onclick = () => { localStorage.fdaDismissed = "1"; $("fda").hidden = true; };
 
+// Everything derived from a tree: node ids in it mean nothing after a rescan
+// or a stage, so all of it goes together.
+function resetDerived() {
+  $("dupe-total").textContent = "";
+  $("dupe-actions").hidden = true;
+  $("dupe-note").textContent = "";
+  $("dupe-title").textContent = "";
+  $("dupe-list").replaceChildren();
+  $("diff-title").textContent = "";
+  $("diff-list").replaceChildren();
+  paintSnaps();
+}
+
 async function startScan(path) {
-  if (!path) return;
-  $("status").textContent = "scanning...";
-  $("empty").textContent = `Scanning ${path}`;
+  if (!path || scanning) return;
   let unlisten = null;
+  scanning = true;
+  $("scan-path").textContent = path;
+  $("scan-count").textContent = "Starting…";
+  $("w-error").hidden = true;
+  showPanel("map");
+  paintHome();
   try {
     unlisten = await window.__TAURI__.event.listen("scan_progress", (e) => {
-      $("status").textContent = `scanning... ${Number(e.payload).toLocaleString()} entries`;
-      $("empty").textContent = `Scanning ${path}\n${Number(e.payload).toLocaleString()} entries`;
+      $("scan-count").textContent = `${Number(e.payload).toLocaleString()} items`;
     });
-    scanning = true;
-    $("go").textContent = "Cancel";
     const ov = await invoke("scan_dir", { path, size: S.size, excludes: $("excludes").value.split("\n") });
-    if (unlisten) unlisten();
-    scanning = false;
-    $("go").textContent = "Scan";
     S.scanned = true;
     S.node = 0;
+    S.sel = -1;
+    inspectId = -1;
+    $("insp").hidden = true;
+    $("insp-empty").hidden = false;
     tray.clear();
     paintTray();
-    $("results").hidden = true;
-    $("dupe-card").hidden = false;
-    $("dupe-total").textContent = "";
-    $("dupe-actions").hidden = true;
-    $("dupe-note").textContent = "";
-    paintSnaps();
+    resetDerived();
     $("path").value = path;
     applyOverview(ov);
     await crumbs();
-    await draw();
   } catch (e) {
+    if (S.scanned) toast(String(e));
+    else { $("w-error").textContent = String(e); $("w-error").hidden = false; }
+  } finally {
     if (unlisten) unlisten();
     scanning = false;
-    $("go").textContent = "Scan";
-    $("status").textContent = String(e);
-    $("empty").textContent = String(e);
+    showPanel("map");
+    paintHome();
+    if (S.scanned) await draw();
   }
 }
 
@@ -146,20 +225,17 @@ async function refreshOverview() {
   applyOverview(await invoke("overview", { size: S.size }));
 }
 
+const SIZE_WORDS = ["you could free", "on disk", "in file sizes"];
+
 function applyOverview(ov) {
-  $("volume-card").hidden = false;
-  $("wins-card").hidden = false;
-  $("types-card").hidden = false;
-  $("empty").hidden = true;
-  $("status").textContent = `${ov.elapsed_ms} ms scan`;
+  $("status").textContent = `Scanned in ${(ov.elapsed_ms / 1000).toFixed(1)} s`;
 
   const shown = [ov.freeable, ov.allocated, ov.logical][S.size];
-  $("title-name").textContent = ov.path;
+  $("title-name").textContent = ov.path.split(/[\\/]/).filter(Boolean).pop() || ov.path;
   $("title-sub").textContent =
-    `${human(shown)} · ${ov.files.toLocaleString()} files · ${ov.dirs.toLocaleString()} folders` +
+    `${human(shown)} ${SIZE_WORDS[S.size]} · ${ov.files.toLocaleString()} files · ${ov.dirs.toLocaleString()} folders` +
     (ov.denied ? ` · ${ov.denied} unreadable` : "") +
-    (ov.shared ? ` · ${ov.shared} sharing blocks` : "") +
-    (ov.excluded ? ` · ${ov.excluded} folders excluded` : "");
+    (ov.excluded ? ` · ${ov.excluded} skipped` : "");
 
   const mac = navigator.platform.startsWith("Mac");
   $("fda").hidden = !(ov.denied > 0 && !localStorage.fdaDismissed);
@@ -171,29 +247,21 @@ function applyOverview(ov) {
   const total = Math.max(1, Number(ov.volume_total));
   const scanned = Math.min(Number(ov.allocated), total);
   const other = Math.max(0, Number(ov.volume_used) - scanned);
-  const a = (scanned / total) * 360;
-  const b = a + (other / total) * 360;
-  const staged = Math.min(Number(S.stagedBytes || 0), total);
-  const c = b + (staged / total) * 360;
-  $("donut").style.background =
-    `conic-gradient(#a8734a 0 ${a}deg, #cdbfa6 ${a}deg ${b}deg, #d9c48a ${b}deg ${c}deg, #e8e2d4 ${c}deg 360deg)`;
-  $("v-staged").textContent = human(staged);
-  $("v-scanned").textContent = human(scanned);
-  $("v-other").textContent = human(other);
-  $("v-free").textContent = human(ov.volume_free);
-  $("scanpath").textContent = ov.path;
-  $("scanmeta").textContent =
-    `freeable ${human(ov.freeable)} of ${human(ov.allocated)} allocated`;
+  $("disk-scan").style.width = `${(scanned / total) * 100}%`;
+  $("disk-other").style.width = `${(other / total) * 100}%`;
+  $("disk-meta").textContent =
+    `This folder ${human(scanned)} · rest of disk ${human(other)} · free ${human(ov.volume_free)}`;
 
   $("wins").replaceChildren(...ov.wins.map((w) => {
     const li = document.createElement("li");
+    li.className = "click";
     const l = document.createElement("span");
     l.innerHTML = `<b>${w.label}</b><br><small>${w.items.toLocaleString()} files</small>`;
     const r = document.createElement("span");
     r.textContent = human(w.bytes);
     li.append(l, r);
     li.title = w.path;
-    li.onclick = () => go(w.id);
+    li.onclick = () => { showPanel("map"); go(w.id); };
     return li;
   }));
 
@@ -353,25 +421,19 @@ function paintOverlay() {
   octx.scale(dpr, dpr);
   if (S.hover >= 0 && S.hover !== si) {
     octx.lineWidth = 2;
-    octx.strokeStyle = "#3a352c";
-    octx.fillStyle = "rgba(255,255,255,0.18)";
+    octx.strokeStyle = "rgba(255,255,255,0.9)";
+    octx.fillStyle = "rgba(255,255,255,0.12)";
     traceRect(S.hover);
     octx.fill();
     octx.stroke();
   }
   if (si >= 0) {
     octx.lineWidth = 3;
-    octx.strokeStyle = "#1d1a15";
-    octx.fillStyle = "rgba(255,255,255,0.34)";
+    octx.strokeStyle = "#30d158";
+    octx.fillStyle = "rgba(48,209,88,0.18)";
     traceRect(si);
     octx.fill();
     octx.stroke();
-    octx.setLineDash([5, 3]);
-    octx.lineWidth = 1;
-    octx.strokeStyle = "#fdfaf2";
-    traceRect(si);
-    octx.stroke();
-    octx.setLineDash([]);
   }
   octx.restore();
 }
@@ -446,7 +508,7 @@ $("add-cleanup").onclick = () => {
 $("tray-clear").onclick = () => { tray.clear(); paintTray(); };
 
 async function paintTray() {
-  $("tray-card").hidden = tray.size === 0;
+  $("badge").hidden = tray.size === 0; $("badge").textContent = tray.size; $("queue-empty").hidden = tray.size > 0;
   $("tray").replaceChildren(...[...tray].map(([id, name]) => {
     const li = document.createElement("li");
     const n = document.createElement("span");
@@ -486,12 +548,7 @@ $("stage-btn").onclick = async () => {
           "Undo", () => undoManifest(r.manifest));
     tray.clear();
     paintTray();
-    $("results").hidden = true;
-    $("dupe-card").hidden = false;
-    $("dupe-total").textContent = "";
-    $("dupe-actions").hidden = true;
-    $("dupe-note").textContent = "";
-    paintSnaps();
+    resetDerived();
     $("status").textContent =
       `staged ${r.moved} items, ${human(r.total_bytes)}` +
       (r.skipped ? ` (${r.skipped} changed, skipped)` : "");
@@ -512,9 +569,9 @@ function toast(text, action, fn) {
   $("toast-text").textContent = text;
   const b = $("toast-act");
   b.hidden = !action;
-  if (action) { b.textContent = action; b.onclick = () => { $("toast").hidden = true; fn(); }; }
-  $("toast").hidden = false;
-  toastTimer = setTimeout(() => { $("toast").hidden = true; }, 10000);
+  if (action) { b.textContent = action; b.onclick = () => { setOpen($("toast"), false); fn(); }; }
+  setOpen($("toast"), true);
+  toastTimer = setTimeout(() => setOpen($("toast"), false), 10000);
 }
 async function undoManifest(id) {
   if (!id) return;
@@ -567,12 +624,18 @@ if (!/Mac/i.test(navigator.platform)) $("reveal-btn").textContent = "Reveal";
 $("reveal-btn").onclick = () => { const id = S.sel >= 0 ? S.sel : inspectId; if (id >= 0) invoke("reveal", { id }); };
 
 document.addEventListener("keydown", (e) => {
-  if (e.target.matches("input, textarea")) return;
+  if (e.target.matches("input, textarea, select")) return;
   if ((e.metaKey || e.ctrlKey) && e.key === "z") { e.preventDefault(); undoManifest(lastStage); }
-  if (e.key === " " && S.scanned) { e.preventDefault(); qlOpen ? quickLookHide() : quickLook(S.sel >= 0 ? S.sel : inspectId); }
-  if (e.key === "Escape") { $("toast").hidden = true; hideTip(); quickLookHide(); }
+  if (e.key === "Escape") {
+    if ($("sheet").hasAttribute("data-open")) { closeSheet(); return; }
+    if (document.querySelector(".pop[data-open]")) { closePops(); return; }
+    setOpen($("toast"), false); hideTip(); quickLookHide();
+    if (M.mode === "storage" && panel !== "map") showPanel("map");
+    return;
+  }
 
-  if (!S.scanned) return;
+  if (!onMap()) return;
+  if (e.key === " ") { e.preventDefault(); qlOpen ? quickLookHide() : quickLook(S.sel >= 0 ? S.sel : inspectId); }
   const dirs = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
   if (dirs[e.key] && !(e.metaKey || e.ctrlKey)) {
     e.preventDefault();
@@ -590,7 +653,7 @@ document.addEventListener("keydown", (e) => {
 async function paintPending() {
   let list = [];
   try { list = await invoke("cleanup_list"); } catch { return; }
-  $("pending-card").hidden = list.length === 0;
+  $("pending-empty").hidden = list.length > 0;
   $("pending").replaceChildren(...list.map((m) => {
     const li = document.createElement("li");
     const n = document.createElement("span");
@@ -634,17 +697,11 @@ async function paintPending() {
     li.append(n, acts);
     return li;
   }));
-  S.stagedBytes = list.reduce((n, m) => n + Number(m.total_bytes), 0);
 }
 
 // ---------------------------------------------------------------- stage 5
 
-function showResults(title, items) {
-  $("results-title").textContent = title;
-  $("results-list").replaceChildren(...items);
-  $("results").hidden = false;
-}
-$("results-close").onclick = () => { $("results").hidden = true; };
+function showResults(which, title, items) { $(which + "-title").textContent = title; $(which + "-list").replaceChildren(...items); }
 
 // --- snapshots ------------------------------------------------------------
 
@@ -663,7 +720,6 @@ $("snap-save").onclick = async () => {
 async function paintSnaps() {
   let list = [];
   try { list = await invoke("snapshot_list"); } catch { return; }
-  $("snap-card").hidden = !S.scanned;
   $("snaps").replaceChildren(...list.map((s) => {
     const li = document.createElement("li");
     const cb = document.createElement("input");
@@ -693,7 +749,7 @@ async function onSnapPick() {
     return;
   }
   if (!rows.length) {
-    showResults("No changes between those snapshots", []);
+    showResults("diff", "No changes between those snapshots", []);
     return;
   }
   let net = 0;
@@ -708,7 +764,7 @@ async function onSnapPick() {
     return li;
   });
   const sign = net >= 0 ? "+" : "-";
-  showResults(`${rows.length} change(s), net ${sign}${human(Math.abs(net))}`, items);
+  showResults("diff", `${rows.length} change(s), net ${sign}${human(Math.abs(net))}`, items);
 }
 
 // --- duplicates -----------------------------------------------------------
@@ -746,7 +802,7 @@ $("dupe-find").onclick = async () => {
         items.push(li);
       }
     }
-    showResults(`Duplicates — ${human(d.total_reclaimable)} reclaimable`, items);
+    showResults("dupe", `Duplicates — ${human(d.total_reclaimable)} reclaimable`, items);
   } catch (e) {
     $("dupe-total").textContent = String(e);
   }
@@ -761,7 +817,7 @@ async function runDedupe(dry) {
       li.innerHTML = `<span class="row2"><span class="p"><span class="tag">refused</span>${p}</span><span>${why}</span></span>`;
       return li;
     });
-    showResults(
+    showResults("dupe",
       `${dry ? "Dry run" : "Deduped"}: ${r.done} file(s), ${human(r.freed)} ${dry ? "would be freed" : "freed"}`,
       items,
     );
@@ -929,19 +985,21 @@ const M = {
   seen: 0,
 };
 
-const STORAGE_ONLY = ["tabs", "controls", "stage", "title"];
-
 function setMode(mode) {
   M.mode = mode;
   [...$("modes").children].forEach((b) => b.classList.toggle("on", b.dataset.mode === mode));
-  STORAGE_ONLY.forEach((id) => { $(id).hidden = mode !== "storage"; });
-  $("apps-panel").hidden = mode !== "apps";
-  $("mon-panel").hidden = mode !== "monitor";
-  $("rail").hidden = mode !== "storage";
-  $("inspector").hidden = mode !== "storage";
-  $("filter").hidden = mode !== "storage";
+  const storage = mode === "storage";
+  $("rail").hidden = !storage;
+  $("filter").hidden = !storage;
+  $("crumbs").hidden = !storage;
+  $("apps-panel").hidden = storage;
+  closePops();
+  if (storage) showPanel(panel);
+  else {
+    for (const p of PANELS) $("panel-" + p).hidden = true;
+    $("inspector").hidden = true;
+  }
   if (mode === "apps" && !M.apps.length) loadApps();
-  if (mode === "storage") draw();
 }
 
 [...$("modes").children].forEach((b) => {
@@ -968,7 +1026,7 @@ async function loadApps() {
 async function reloadApps() {
   M.detail = null;
   M.sel = -1;
-  $("sheet").hidden = true;
+  closeSheet();
   $("app-detail").replaceChildren();
   await loadApps();
 }
@@ -1202,7 +1260,7 @@ function reviewUninstall(d) {
     $("sheet-go").textContent = "staging...";
     try {
       const r = await invoke("app_uninstall", { token: d.token });
-      $("sheet").hidden = true;
+      closeSheet();
       const missed = r.refused.length
         ? ` - ${r.refused.length} not moved: ${r.refused.map(([p, w]) => `${p} (${w})`).join("; ")}`
         : "";
@@ -1220,11 +1278,11 @@ function reviewUninstall(d) {
     $("sheet-go").disabled = false;
     $("sheet-go").textContent = "Stage for removal";
   };
-  $("sheet").hidden = false;
+  setOpen($("sheet"), true);
 }
 
-$("sheet-cancel").onclick = () => { $("sheet").hidden = true; };
-$("sheet").onclick = (e) => { if (e.target === $("sheet")) $("sheet").hidden = true; };
+$("sheet-cancel").onclick = closeSheet;
+$("sheet").onclick = (e) => { if (e.target === $("sheet")) closeSheet(); };
 
 // --- monitor --------------------------------------------------------------
 
@@ -1317,31 +1375,4 @@ $("mon-pause").onclick = () => {
 $("mon-clear").onclick = () => { M.events = []; paintEvents(); };
 
 setMode("storage");
-
-// ------------------------------------------------------------------- tour
-
-const TOUR = [
-  ["targets", "Pick a folder. Home is a good first scan."],
-  ["stage", "Tile size is what deleting would free, not what Finder shows. The Size menu switches between them."],
-  ["tabs", "Eight views of the same scan. Treemap for size, Age map for what has gone stale."],
-  ["add-cleanup", "Click a tile, then Add to Cleanup. Nothing is deleted yet."],
-  ["stage-btn", "Stage moves files aside. Undo lives in the Staged card, and nothing is deleted until you Commit."],
-];
-let tourStep = -1;
-function tourShow(i) {
-  tourStep = i;
-  if (i < 0 || i >= TOUR.length) { $("spot").hidden = true; if ($("tour").open) $("tour").close(); localStorage.tour = "1"; return; }
-  const [id, text] = TOUR[i];
-  const r = $(id).getBoundingClientRect();
-  $("spot").hidden = r.width === 0;   // hidden until a scan or a selection exists
-  Object.assign($("spot").style, { left: r.left - 6 + "px", top: r.top - 6 + "px", width: r.width + 12 + "px", height: r.height + 12 + "px" });
-  $("tour-text").textContent = text + (r.width === 0 ? " (scan a folder first)" : "");
-  $("tour-back").disabled = i === 0;
-  $("tour-next").textContent = i === TOUR.length - 1 ? "Done" : "Next";
-  if (!$("tour").open) $("tour").show();
-}
-$("tour-next").onclick = () => tourShow(tourStep + 1);
-$("tour-back").onclick = () => tourShow(tourStep - 1);
-$("tour-skip").onclick = () => tourShow(-1);
-$("help").onclick = () => tourShow(0);
-if (!localStorage.tour) tourShow(0);
+paintHome();

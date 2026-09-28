@@ -2,145 +2,195 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
+<meta name="color-scheme" content="dark" />
 <title>Plumb</title>
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
 <header id="topbar">
-  <nav id="modes">
+  <div id="modes" class="seg">
     <button class="on" data-mode="storage">Storage</button>
-    <button data-mode="apps">Applications</button>
-    <button data-mode="monitor">Monitor</button>
-  </nav>
-  <nav id="crumbs"></nav>
-  <input id="filter" type="search" placeholder="filter by name" spellcheck="false" />
-  <button id="help" title="Show the tour">?</button>
+    <button data-mode="apps">Apps</button>
+  </div>
+  <nav id="crumbs" aria-label="Path"></nav>
+  <input id="filter" type="search" placeholder="Filter by name" spellcheck="false" aria-label="Filter by name" />
 </header>
 
 <main>
   <aside id="rail">
-    <section>
-      <div id="fda" class="banner" hidden><span id="fda-text"></span><button id="fda-open">Open Settings</button><button id="fda-x">✕</button></div>
-      <h2>Scan</h2>
-      <div id="targets"></div>
+    <div id="fda" class="banner" hidden>
+      <span id="fda-text"></span>
+      <button id="fda-open">Open Settings</button>
+      <button id="fda-x" aria-label="Dismiss">✕</button>
+    </div>
+
+    <h2>Locations</h2>
+    <div id="targets" class="nav"></div>
+    <div class="nav"><button id="pick">Choose…</button></div>
+    <details id="choose-more">
+      <summary>Type a path or skip folders</summary>
       <div class="row">
-        <input id="path" type="text" placeholder="/path/to/folder" spellcheck="false" />
+        <input id="path" type="text" placeholder="/path/to/folder" spellcheck="false" aria-label="Folder path" />
         <button id="go">Scan</button>
       </div>
-      <button id="pick" class="wide">Choose folder...</button>
-      <details><summary class="muted tiny">Exclude folders</summary>
-        <textarea id="excludes" rows="3" placeholder="node_modules&#10;.git" spellcheck="false"></textarea></details>
-    </section>
+      <textarea id="excludes" rows="3" placeholder="node_modules&#10;.git" spellcheck="false" aria-label="Folder names to skip, one per line"></textarea>
+    </details>
 
-    <section id="volume-card" hidden>
-      <h2>Volume</h2>
-      <div class="donut-wrap">
-        <div id="donut"></div>
-        <div class="donut-legend">
-          <div><i class="sw scanned"></i>scanned <span id="v-scanned"></span></div>
-          <div><i class="sw other"></i>elsewhere <span id="v-other"></span></div>
-          <div><i class="sw free"></i>free <span id="v-free"></span></div>
-          <div><i class="sw" style="background:#d9c48a"></i>staged <span id="v-staged"></span></div>
-        </div>
-      </div>
-      <p id="scanpath" class="muted"></p>
-      <p id="scanmeta" class="muted"></p>
-    </section>
+    <h2>Overview</h2>
+    <div class="nav">
+      <button data-panel="wins" data-needs-scan>Quick wins</button>
+      <button data-panel="types" data-needs-scan>File types</button>
+      <button data-panel="dupes" data-needs-scan>Duplicates</button>
+      <button data-panel="snaps" data-needs-scan>Snapshots</button>
+      <button data-panel="watch">Watch folder</button>
+    </div>
 
-    <section id="wins-card" hidden>
-      <h2>Quick wins</h2>
-      <ul id="wins"></ul>
-    </section>
-
-    <section id="tray-card" hidden>
-      <h2>Cleanup tray</h2>
-      <ul id="tray"></ul>
-      <p id="tray-total"></p>
-      <p id="tray-refused" class="muted"></p>
-      <div class="row">
-        <button id="stage-btn">Stage</button>
-        <button id="tray-clear">Clear</button>
-      </div>
-      <p class="muted tiny">Staging moves files into an app-owned folder. Nothing is deleted until you commit.</p>
-    </section>
-
-    <section id="pending-card" hidden>
-      <h2>Staged, awaiting commit</h2>
-      <ul id="pending"></ul>
-    </section>
-
-    <section id="snap-card" hidden>
-      <h2>Snapshots</h2>
-      <button id="snap-save" class="wide">Save snapshot</button>
-      <ul id="snaps"></ul>
-      <p class="muted tiny">Pick two to compare.</p>
-    </section>
-
-    <section id="dupe-card" hidden>
-      <h2>Duplicates</h2>
-      <button id="dupe-find" class="wide">Find duplicates</button>
-      <p id="dupe-total" class="muted"></p>
-      <div class="row" id="dupe-actions" hidden>
-        <button id="dupe-dry">Dry run</button>
-        <button id="dupe-go" class="danger">Dedupe</button>
-      </div>
-      <p id="dupe-note" class="muted tiny"></p>
-    </section>
-
-    <section id="types-card" hidden>
-      <h2>File types</h2>
-      <div id="typebar"></div>
-      <ul id="typelist"></ul>
-    </section>
+    <h2>Cleanup</h2>
+    <div class="nav">
+      <button data-panel="cleanup">Cleanup <span id="badge" class="badge" hidden></span></button>
+    </div>
+    <p class="callout" data-tip="cleanup" hidden><span>Your queue lives here. Review it, then Stage.</span><button>OK</button></p>
   </aside>
 
   <section id="center">
-    <div id="title">
-      <h1 id="title-name">Pick a folder to begin</h1>
-      <p id="title-sub" class="muted"></p>
-    </div>
-
-    <div id="tabs"></div>
-
-    <div id="controls">
-      <label>Colour
-        <select id="color">
-          <option value="0">by type</option>
-          <option value="1">by folder</option>
-          <option value="2">by age</option>
-        </select>
-      </label>
-      <label>Size
-        <select id="size">
-          <option value="0">freeable</option>
-          <option value="1">allocated</option>
-          <option value="2">logical</option>
-        </select>
-      </label>
-      <label id="scope-wrap" hidden>Scope
-        <select id="scope">
-          <option value="0">this folder</option>
-          <option value="1">biggest files anywhere</option>
-          <option value="2">biggest folders anywhere</option>
-        </select>
-      </label>
-      <label>Depth <input id="depth" type="range" min="1" max="8" value="4" />
-        <span id="depth-val">4</span>
-      </label>
-      <span id="status" class="muted"></span>
-    </div>
-
-    <div id="stage">
-      <canvas id="image"></canvas>
-      <canvas id="overlay"></canvas>
-      <div id="empty">No scan yet.</div>
-      <div id="tip" hidden><img id="tip-img" hidden alt=""><div id="tip-body"></div></div>
-      <div id="results" hidden>
-        <div id="results-head">
-          <strong id="results-title"></strong>
-          <button id="results-close">Back to views</button>
+    <div id="panel-map" class="panel">
+      <div id="welcome" class="hero">
+        <h1>What's filling your disk?</h1>
+        <div id="w-bar" class="bar"><i id="w-used"></i></div>
+        <p id="w-meta" class="muted"></p>
+        <div class="tiles">
+          <button id="w-home" class="tile"><b>Home</b><span>Your files. Best first scan.</span></button>
+          <button id="w-disk" class="tile"><b>Whole disk</b><span>Everything, slower.</span></button>
         </div>
-        <ul id="results-list"></ul>
+        <p class="muted">or drop any folder here</p>
+        <p id="w-error" class="error" role="alert" hidden></p>
+      </div>
+
+      <div id="scanning" class="hero" hidden>
+        <h1>Scanning</h1>
+        <p id="scan-path" class="muted path"></p>
+        <p id="scan-count" class="big"></p>
+        <div class="bar indet"><i></i></div>
+        <button id="scan-cancel">Cancel</button>
+      </div>
+
+      <div id="mapview" hidden>
+        <div id="title">
+          <h1 id="title-name"></h1>
+          <p id="title-sub" class="muted"></p>
+          <div id="diskbar" class="bar"><i id="disk-scan"></i><i id="disk-other"></i></div>
+          <p id="disk-meta" class="muted tiny"></p>
+        </div>
+        <div id="viewbar">
+          <div id="tabs" class="seg"></div>
+          <div class="pop-wrap">
+            <button id="more-btn" aria-haspopup="true">More ▾</button>
+            <div id="more-pop" class="pop"></div>
+          </div>
+          <span id="status" class="muted"></span>
+          <div class="pop-wrap">
+            <button id="display-btn" aria-haspopup="true">Display ▾</button>
+            <div id="display-pop" class="pop">
+              <label>Colour by
+                <select id="color">
+                  <option value="0">File type</option>
+                  <option value="1">Folder</option>
+                  <option value="2">Age</option>
+                </select>
+              </label>
+              <label>Size shows
+                <select id="size">
+                  <option value="0">What you'd free</option>
+                  <option value="1">Space on disk</option>
+                  <option value="2">File size</option>
+                </select>
+              </label>
+              <p class="callout" data-tip="size" hidden><span>"What you'd free" counts only space deleting would return. Shared and cloned blocks stay.</span><button>OK</button></p>
+              <label>Depth
+                <span><input id="depth" type="range" min="1" max="8" value="4" /> <span id="depth-val">4</span></span>
+              </label>
+              <label id="scope-wrap" hidden>Scope
+                <select id="scope">
+                  <option value="0">This folder</option>
+                  <option value="1">Biggest files anywhere</option>
+                  <option value="2">Biggest folders anywhere</option>
+                </select>
+              </label>
+            </div>
+          </div>
+        </div>
+        <div id="stage">
+          <canvas id="image"></canvas>
+          <canvas id="overlay"></canvas>
+          <div id="tip" hidden><img id="tip-img" hidden alt=""><div id="tip-body"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="panel-wins" class="panel" hidden>
+      <div class="panel-head"><h1>Quick wins</h1></div>
+      <p class="muted">Places that grow quietly. Click one to open it on the map.</p>
+      <ul id="wins" class="list"></ul>
+    </div>
+
+    <div id="panel-types" class="panel" hidden>
+      <div class="panel-head"><h1>File types</h1></div>
+      <div id="typebar" class="bar"></div>
+      <ul id="typelist" class="list"></ul>
+    </div>
+
+    <div id="panel-dupes" class="panel" hidden>
+      <div class="panel-head">
+        <h1>Duplicates</h1>
+        <span id="dupe-actions" hidden><button id="dupe-dry">Dry run</button> <button id="dupe-go" class="danger">Dedupe</button></span>
+        <button id="dupe-find" class="primary">Find duplicates</button>
+      </div>
+      <p id="dupe-total" class="muted"></p>
+      <p id="dupe-note" class="muted tiny"></p>
+      <h3 id="dupe-title"></h3>
+      <ul id="dupe-list" class="list"></ul>
+    </div>
+
+    <div id="panel-snaps" class="panel" hidden>
+      <div class="panel-head"><h1>Snapshots</h1><button id="snap-save" class="primary">Save snapshot</button></div>
+      <p class="muted">Tick two to see what changed between them.</p>
+      <ul id="snaps" class="list"></ul>
+      <h3 id="diff-title"></h3>
+      <ul id="diff-list" class="list"></ul>
+    </div>
+
+    <div id="panel-watch" class="panel" hidden>
+      <div class="panel-head"><h1>Watch folder</h1></div>
+      <div id="mon-head">
+        <input id="mon-path" type="text" placeholder="/path/to/watch" spellcheck="false" aria-label="Folder to watch" />
+        <button id="mon-pick">Choose…</button>
+        <button id="mon-start" class="primary">Start</button>
+        <button id="mon-pause" disabled>Pause</button>
+        <button id="mon-clear">Clear</button>
+      </div>
+      <p id="mon-status" class="muted tiny"></p>
+      <p id="mon-empty" class="muted">Choose a folder to watch. Changes appear here as they happen, with the size each one added or freed.</p>
+      <ul id="mon-list" class="list"></ul>
+    </div>
+
+    <div id="panel-cleanup" class="panel" hidden>
+      <div class="panel-head"><h1>Cleanup</h1></div>
+      <ol id="steps"><li data-step="1">Review</li><li data-step="2">Stage</li><li data-step="3">Delete</li></ol>
+      <p class="muted">Staging moves files aside. Undo any time. Nothing is deleted until step 3.</p>
+      <div class="cols">
+        <section>
+          <h2>Queue</h2>
+          <p id="queue-empty" class="muted">Nothing queued. Select a tile on the map and choose Add to Cleanup.</p>
+          <ul id="tray" class="list"></ul>
+          <p id="tray-total"></p>
+          <p id="tray-refused" class="muted tiny"></p>
+          <div class="row"><button id="tray-clear">Clear</button><button id="stage-btn" class="primary">Stage</button></div>
+        </section>
+        <section>
+          <h2>Staged</h2>
+          <p id="pending-empty" class="muted">Nothing staged.</p>
+          <ul id="pending" class="list"></ul>
+        </section>
       </div>
     </div>
 
@@ -148,7 +198,7 @@
       <div id="apps-head">
         <strong id="apps-count">Applications</strong>
         <label class="tiny"><input id="apps-guesses" type="checkbox" />
-          possible leftovers (name matches - guesses, not proof)</label>
+          Possible leftovers (name matches, guesses not proof)</label>
         <button id="apps-refresh">Rescan</button>
       </div>
       <div id="apps-body">
@@ -158,56 +208,43 @@
         </div>
       </div>
     </div>
-
-    <div id="mon-panel" hidden>
-      <div id="mon-head">
-        <input id="mon-path" type="text" placeholder="/path/to/watch" spellcheck="false" />
-        <button id="mon-pick">Choose folder...</button>
-        <button id="mon-start">Start</button>
-        <button id="mon-pause" disabled>Pause</button>
-        <button id="mon-clear">Clear</button>
-        <span id="mon-status" class="muted"></span>
-      </div>
-      <p id="mon-empty" class="muted">Choose a folder to watch. Changes appear here as they happen, with the size each one added or freed.</p>
-      <ul id="mon-list"></ul>
-    </div>
   </section>
 
   <aside id="inspector">
-    <div id="insp-empty" class="muted">Hover a tile.</div>
+    <p id="insp-empty" class="muted">Select a tile to see details</p>
     <div id="insp" hidden>
-      <h2 id="i-name"></h2>
+      <p id="i-name"></p>
       <p id="i-path" class="muted path"></p>
-      <p id="i-size"></p>
+      <p id="i-size" class="big"></p>
       <p id="i-pct" class="muted"></p>
+      <button id="add-cleanup" class="wide primary">Add to Cleanup</button>
+      <p class="callout" data-tip="inspect" hidden><span>Add to Cleanup queues it. Nothing is deleted yet.</span><button>OK</button></p>
+      <button id="ql-btn" class="wide">Quick Look</button>
+      <button id="reveal-btn" class="wide">Show in Finder</button>
       <h3>Details</h3>
       <dl id="i-details"></dl>
-      <button id="add-cleanup" class="wide">Add to Cleanup</button>
-      <button id="ql-btn" class="wide">Quick Look</button>
-      <button id="reveal-btn" class="wide">Reveal in Finder</button>
       <h3>Largest inside</h3>
       <ul id="i-children"></ul>
     </div>
+    <p class="hint">Double-click to open · Space to preview · Right-click to reveal</p>
   </aside>
 </main>
 
-<div id="sheet" hidden>
-  <div id="sheet-box">
+<div id="sheet">
+  <div id="sheet-box" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
     <h2 id="sheet-title"></h2>
     <p id="sheet-sub" class="muted"></p>
     <div id="sheet-body"></div>
     <div class="row sheet-actions">
       <button id="sheet-cancel">Cancel</button>
-      <button id="sheet-go" class="danger">Stage for removal</button>
+      <button id="sheet-go" class="destructive">Stage for removal</button>
     </div>
-    <p class="muted tiny">Staging moves files into an app-owned folder. Nothing is deleted until you commit, and Undo puts everything back in one step.</p>
+    <p id="sheet-note" class="muted tiny">Staging moves files into an app-owned folder. Nothing is deleted until you commit, and Undo puts everything back in one step.</p>
   </div>
 </div>
 
 <dialog id="ql"><img id="ql-img" alt=""><div id="ql-text" class="muted"></div><button id="ql-close">Close</button></dialog>
-<div id="spot" hidden></div>
-<dialog id="tour"><p id="tour-text"></p><div class="row"><button id="tour-back">Back</button><button id="tour-next">Next</button><button id="tour-skip" class="muted">Skip</button></div></dialog>
-<div id="toast" hidden><span id="toast-text"></span><button id="toast-act" hidden></button></div>
+<div id="toast" role="status"><span id="toast-text"></span><button id="toast-act" hidden></button></div>
 <script src="app.js"></script>
 </body>
 </html>
