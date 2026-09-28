@@ -90,6 +90,28 @@ function closeSheet() {
   sheetCancel = null;
   if (c) c();
 }
+const STAGE_NOTE =
+  "Staging moves files into an app-owned folder. Nothing is deleted until you commit, and Undo puts everything back in one step.";
+function openSheet(title, sub, goText, note) {
+  $("sheet-title").textContent = title;
+  $("sheet-sub").textContent = sub;
+  $("sheet-go").textContent = goText;
+  $("sheet-note").textContent = note;
+  setOpen($("sheet"), true);
+  // Default focus on the safe choice.
+  $("sheet-cancel").focus();
+}
+
+// In-app replacement for window.confirm. Resolves false on Cancel, Escape
+// or a backdrop click.
+function ask(title, sub, goText) {
+  $("sheet-body").replaceChildren();
+  return new Promise((res) => {
+    sheetCancel = () => res(false);
+    $("sheet-go").onclick = () => { sheetCancel = null; closeSheet(); res(true); };
+    openSheet(title, sub, goText, "");
+  });
+}
 function closePops() { document.querySelectorAll(".pop[data-open]").forEach((p) => setOpen(p, false)); }
 function popover(btn, pop, onOpen) {
   btn.onclick = (e) => {
@@ -546,8 +568,21 @@ $("add-cleanup").onclick = () => {
 };
 $("tray-clear").onclick = () => { tray.clear(); paintTray(); };
 
+let stagedCount = 0;
+let deleting = false;
+
+// Review lights up while something is queued, Stage while something is
+// staged, Delete only while a commit runs.
+function paintSteps() {
+  const on = { 1: tray.size > 0, 2: stagedCount > 0, 3: deleting };
+  document.querySelectorAll("#steps li").forEach((li) => li.toggleAttribute("data-active", on[li.dataset.step]));
+}
+
 async function paintTray() {
-  $("badge").hidden = tray.size === 0; $("badge").textContent = tray.size; $("queue-empty").hidden = tray.size > 0;
+  $("badge").hidden = tray.size === 0;
+  $("badge").textContent = tray.size;
+  $("queue-empty").hidden = tray.size > 0;
+  $("tray-clear").hidden = $("stage-btn").hidden = tray.size === 0;
   $("tray").replaceChildren(...[...tray].map(([id, name]) => {
     const li = document.createElement("li");
     const n = document.createElement("span");
@@ -555,22 +590,25 @@ async function paintTray() {
     n.textContent = name;
     const x = document.createElement("button");
     x.className = "drop";
-    x.textContent = "remove";
+    x.textContent = "Remove";
     x.onclick = () => { tray.delete(id); paintTray(); };
     li.append(n, x);
     return li;
   }));
+  paintSteps();
   if (tray.size === 0) {
     $("tray-total").textContent = "";
     $("tray-refused").textContent = "";
     return;
   }
+  $("stage-btn").textContent = "Stage";
   // Always a dry run first: the total shown is the one Rust would act on.
   try {
     const p = await invoke("cleanup_plan", { ids: [...tray.keys()] });
-    $("tray-total").textContent = `${p.items.length} items, ${human(p.total_bytes)} freeable`;
+    $("tray-total").textContent = `${p.items.length} items, ${human(p.total_bytes)} you could free`;
+    $("stage-btn").textContent = `Stage ${human(p.total_bytes)}`;
     $("tray-refused").textContent = p.refused.length
-      ? p.refused.map(([path, why]) => `refused ${path.split("/").pop()}: ${why}`).join("\n")
+      ? p.refused.map(([path, why]) => `Skipped ${path.split(/[\\/]/).pop()}: ${why}`).join("\n")
       : "";
   } catch (e) {
     $("tray-total").textContent = String(e);
@@ -693,6 +731,8 @@ async function paintPending() {
   let list = [];
   try { list = await invoke("cleanup_list"); } catch { return; }
   $("pending-empty").hidden = list.length > 0;
+  stagedCount = list.length;
+  paintSteps();
   $("pending").replaceChildren(...list.map((m) => {
     const li = document.createElement("li");
     const n = document.createElement("span");
@@ -706,9 +746,15 @@ async function paintPending() {
     undo.onclick = () => undoManifest(m.id);
     const del = document.createElement("button");
     del.className = "danger";
-    del.textContent = "Commit";
+    del.textContent = "Delete…";
     del.onclick = async () => {
-      if (!confirm(`Permanently delete ${m.items} items (${human(m.total_bytes)})? This cannot be undone.`)) return;
+      if (!(await ask(
+        `Delete ${m.items} items for good?`,
+        `${human(m.total_bytes)} will be permanently deleted. This can't be undone.`,
+        "Delete",
+      ))) return;
+      deleting = true;
+      paintSteps();
       lastStage = 0;
       const ch = new window.__TAURI__.core.Channel();
       ch.onmessage = (p) => {
@@ -729,6 +775,7 @@ async function paintPending() {
           li.append(ul);
         }
       } catch (e) { $("status").textContent = String(e); }
+      deleting = false;
       await paintPending();
       await refreshOverview();
     };
@@ -867,8 +914,12 @@ async function runDedupe(dry) {
 }
 
 $("dupe-dry").onclick = () => runDedupe(true);
-$("dupe-go").onclick = () => {
-  if (!confirm("Replace duplicate copies with shared extents? Both files stay readable and byte-identical.")) return;
+$("dupe-go").onclick = async () => {
+  if (!(await ask(
+    "Replace duplicates with shared copies?",
+    "Both files stay readable and byte-identical. Only the extra space is freed.",
+    "Dedupe",
+  ))) return;
   runDedupe(false);
 };
 
@@ -1192,7 +1243,7 @@ async function openApp(idx) {
   keys.className = "keys";
   keys.innerHTML =
     `<span><i style="background:var(--accent)"></i>bundle ${human(bundle)}</span>` +
-    `<span><i style="background:#c9a888"></i>support files ${human(support)}</span>`;
+    `<span><i style="background:var(--indigo)"></i>support files ${human(support)}</span>`;
   split.append(bar, keys);
   foot.append(big, split);
   box.append(foot);
@@ -1210,7 +1261,7 @@ async function openApp(idx) {
   box.append(ah, ...assocList(d.items));
 
   const btn = document.createElement("button");
-  btn.className = "wide danger";
+  btn.className = "wide destructive";
   btn.textContent = "Uninstall Completely";
   btn.disabled = d.staged.length === 0;
   btn.onclick = () => reviewUninstall(d);
@@ -1226,10 +1277,6 @@ async function openApp(idx) {
 
 // Nothing is staged until this sheet is confirmed.
 function reviewUninstall(d) {
-  $("sheet-title").textContent = `Uninstall ${d.app.name}`;
-  $("sheet-sub").textContent =
-    `${d.staged.length} item(s), ${human(Number(d.stage_bytes))} will be moved to staging.`;
-
   const body = $("sheet-body");
   body.replaceChildren();
 
@@ -1317,7 +1364,12 @@ function reviewUninstall(d) {
     $("sheet-go").disabled = false;
     $("sheet-go").textContent = "Stage for removal";
   };
-  setOpen($("sheet"), true);
+  openSheet(
+    `Uninstall ${d.app.name}`,
+    `${d.staged.length} item(s), ${human(Number(d.stage_bytes))} will be moved to staging.`,
+    "Stage for removal",
+    STAGE_NOTE,
+  );
 }
 
 $("sheet-cancel").onclick = closeSheet;
