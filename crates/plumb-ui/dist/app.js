@@ -102,7 +102,7 @@ function popover(btn, pop, onOpen) {
   pop.onclick = (e) => e.stopPropagation();
 }
 popover($("more-btn"), $("more-pop"));
-popover($("display-btn"), $("display-pop"));
+popover($("display-btn"), $("display-pop"), () => tipOnce("size"));
 document.addEventListener("click", closePops);
 
 const onMap = () => M.mode === "storage" && panel === "map" && S.scanned && !scanning;
@@ -151,8 +151,10 @@ $("pick").onclick = async () => {
 };
 $("path").onkeydown = (e) => { if (e.key === "Enter") $("go").click(); };
 
+let homePath = "";
 invoke("targets").then((list) => {
   for (const t of list) {
+    if (t.label === "Home") homePath = t.path;
     const b = document.createElement("button");
     b.textContent = t.label;
     b.title = t.path;
@@ -160,6 +162,41 @@ invoke("targets").then((list) => {
     $("targets").append(b);
   }
 });
+
+// ------------------------------------------------------------------ welcome
+
+invoke("volume_info", { path: null }).then((v) => {
+  const total = Math.max(1, Number(v.total));
+  $("w-used").style.width = `${(Number(v.used) / total) * 100}%`;
+  $("w-meta").textContent = `${human(v.used)} used · ${human(v.free)} free of ${human(v.total)}`;
+}).catch(() => { $("w-bar").hidden = true; });
+
+$("w-home").onclick = () => startScan(homePath);
+$("w-disk").onclick = () => startScan(navigator.platform.startsWith("Win") ? "C:\\" : "/");
+
+// Tauri delivers OS drops as window events with real paths; the DOM drop
+// event never sees a filesystem path in a webview.
+const tev = window.__TAURI__.event;
+tev.listen("tauri://drag-enter", () => { if (M.mode === "storage") document.body.classList.add("dropping"); });
+tev.listen("tauri://drag-leave", () => document.body.classList.remove("dropping"));
+tev.listen("tauri://drag-drop", (e) => {
+  document.body.classList.remove("dropping");
+  const p = e.payload?.paths?.[0];
+  if (p && M.mode === "storage") startScan(p);
+});
+
+// One short callout the first time each idea shows up; replaces the old tour.
+function tipOnce(name) {
+  const el = document.querySelector(`[data-tip="${name}"]`);
+  let seen = false;
+  try { seen = localStorage.getItem("tip." + name) === "1"; } catch {}
+  if (!el || seen) return;
+  el.hidden = false;
+  el.querySelector("button").onclick = () => {
+    el.hidden = true;
+    try { localStorage.setItem("tip." + name, "1"); } catch {}
+  };
+}
 
 // -------------------------------------------------------------------- scan
 
@@ -458,6 +495,7 @@ async function inspect(id) {
 
   $("insp-empty").hidden = true;
   $("insp").hidden = false;
+  tipOnce("inspect");
   $("i-name").textContent = info.name;
   $("i-path").textContent = info.path;
   $("i-size").textContent = human(info.bytes);
@@ -504,6 +542,7 @@ $("add-cleanup").onclick = () => {
   if (id < 0) return;
   tray.set(id, $("i-name").textContent);
   paintTray();
+  tipOnce("cleanup");
 };
 $("tray-clear").onclick = () => { tray.clear(); paintTray(); };
 
@@ -710,9 +749,9 @@ $("snap-save").onclick = async () => {
   try {
     await invoke("snapshot_save");
     await paintSnaps();
-    $("status").textContent = "snapshot saved";
+    toast("Snapshot saved");
   } catch (e) {
-    $("status").textContent = String(e);
+    $("diff-title").textContent = String(e);
   }
   $("snap-save").textContent = "Save snapshot";
 };
@@ -745,7 +784,7 @@ async function onSnapPick() {
   try {
     rows = await invoke("snapshot_diff", { old: a, new: b });
   } catch (e) {
-    $("status").textContent = String(e);
+    $("diff-title").textContent = String(e);
     return;
   }
   if (!rows.length) {
