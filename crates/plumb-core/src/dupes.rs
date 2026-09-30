@@ -146,11 +146,17 @@ pub fn find(t: &Tree, root: &Path, min_size: u64) -> Vec<Group> {
         .collect();
     let path_of = |id: NodeId| paths.get(&id).cloned();
 
-    // Tier 2: head + tail + size.
-    let groups = regroup(groups, |id| {
-        let p = path_of(id)?;
-        head_tail_hash(&p, t.logical[id as usize])
-    });
+    // Tier 2: head + tail + size. In parallel like tier 3: this pass opens
+    // every size-matched file, so run serially it dominates the whole search.
+    let ids: Vec<NodeId> = groups.iter().flatten().copied().collect();
+    let edge: HashMap<NodeId, u64> = ids
+        .par_iter()
+        .filter_map(|&id| {
+            let h = head_tail_hash(paths.get(&id)?, t.logical[id as usize])?;
+            Some((id, h))
+        })
+        .collect();
+    let groups = regroup(groups, |id| edge.get(&id).copied());
     if groups.is_empty() {
         return Vec::new();
     }

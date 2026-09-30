@@ -304,12 +304,14 @@ function applyOverview(ov) {
   $("fda-open").hidden = !mac;
 
   const total = Math.max(1, Number(ov.volume_total));
-  const scanned = Math.min(Number(ov.allocated), total);
+  // Allocated can exceed the volume's used bytes (hard links, clones and
+  // shared blocks count once per name), so cap it there.
+  const scanned = Math.min(Number(ov.allocated), Number(ov.volume_used) || total);
   const other = Math.max(0, Number(ov.volume_used) - scanned);
   $("disk-scan").style.width = `${(scanned / total) * 100}%`;
   $("disk-other").style.width = `${(other / total) * 100}%`;
   $("disk-meta").textContent =
-    `This folder ${human(scanned)} · rest of disk ${human(other)} · free ${human(ov.volume_free)}`;
+    `This folder ${human(scanned)}` + (other ? ` · rest of disk ${human(other)}` : "") + ` · free ${human(ov.volume_free)}`;
 
   $("wins").replaceChildren(...ov.wins.map((w) => {
     const li = document.createElement("li");
@@ -345,24 +347,36 @@ function applyOverview(ov) {
 
 // ------------------------------------------------------------------ render
 
-let pending = false;
+let pending = false, again = false;
 
 async function draw() {
-  if (!S.scanned || pending) return;
+  if (!S.scanned) return;
+  // One render in flight; a request that lands meanwhile redraws once after
+  // it, so the last view/depth/size change always wins.
+  if (pending) { again = true; return; }
   pending = true;
   const stage = $("stage");
   const w = stage.clientWidth, h = stage.clientHeight;
   const dpr = window.devicePixelRatio || 1;
   S.css = { w, h };
 
-  const buf = await invoke("render_view", {
-    req: {
-      node: S.node, view: S.view, levels: S.levels,
-      w, h, dpr, color: S.color, size: S.size,
-      scope: S.scope, filter: S.filter,
-    },
-  });
-  pending = false;
+  // Only show the bar for renders slow enough to notice.
+  const busy = setTimeout(() => { $("busy").hidden = false; }, 150);
+  let buf;
+  try {
+    buf = await invoke("render_view", {
+      req: {
+        node: S.node, view: S.view, levels: S.levels,
+        w, h, dpr, color: S.color, size: S.size,
+        scope: S.scope, filter: S.filter,
+      },
+    });
+  } finally {
+    clearTimeout(busy);
+    $("busy").hidden = true;
+    pending = false;
+  }
+  if (again) { again = false; return draw(); }
   const u8 = new Uint8Array(buf);
   if (u8.byteLength < 20) return;
   const dv = new DataView(u8.buffer, u8.byteOffset);
@@ -856,11 +870,17 @@ async function onSnapPick() {
 // --- duplicates -----------------------------------------------------------
 
 let dupeReady = false;
+// Smaller duplicates free almost nothing and there are millions of them
+// (node_modules, caches); hashing them is what made the search take minutes.
+const DUPE_MIN = 1024 * 1024;
 
 $("dupe-find").onclick = async () => {
-  $("dupe-find").textContent = "scanning...";
+  $("dupe-find").textContent = "Finding…";
+  $("dupe-find").disabled = true;
+  $("dupe-busy").hidden = false;
+  $("dupe-total").textContent = "Comparing files of 1 MB and larger. Large folders take a while; the map waits until this finishes.";
   try {
-    const d = await invoke("dupes_find", { minSize: 0 });
+    const d = await invoke("dupes_find", { minSize: DUPE_MIN });
     dupeReady = d.groups.length > 0;
     $("dupe-total").textContent = d.groups.length
       ? `${d.groups.length} group(s), ${human(d.total_reclaimable)} reclaimable`
@@ -893,11 +913,15 @@ $("dupe-find").onclick = async () => {
     $("dupe-total").textContent = String(e);
   }
   $("dupe-find").textContent = "Find duplicates";
+  $("dupe-find").disabled = false;
+  $("dupe-busy").hidden = true;
 };
 
 async function runDedupe(dry) {
+  $("dupe-busy").hidden = false;
+  $("dupe-dry").disabled = $("dupe-go").disabled = true;
   try {
-    const r = await invoke("dupes_dedupe", { minSize: 0, dryRun: dry });
+    const r = await invoke("dupes_dedupe", { minSize: DUPE_MIN, dryRun: dry });
     const items = r.refused.map(([p, why]) => {
       const li = document.createElement("li");
       li.innerHTML = `<span class="row2"><span class="p"><span class="tag">refused</span>${p}</span><span>${why}</span></span>`;
@@ -911,6 +935,8 @@ async function runDedupe(dry) {
   } catch (e) {
     $("dupe-total").textContent = String(e);
   }
+  $("dupe-busy").hidden = true;
+  $("dupe-dry").disabled = $("dupe-go").disabled = false;
 }
 
 $("dupe-dry").onclick = () => runDedupe(true);

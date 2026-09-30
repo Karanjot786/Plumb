@@ -203,6 +203,8 @@ body.dropping::after {
 #stage { position: relative; flex: 1; min-height: 0; border-radius: 10px; overflow: hidden; background: var(--bg); border: 1px solid var(--line); }
 #stage canvas { position: absolute; inset: 0; display: block; }
 #overlay { pointer-events: none; }
+#busy { position: absolute; top: 0; left: 0; z-index: 2; max-width: none; height: 3px; border-radius: 0; background: transparent; }
+#dupe-busy { margin: 6px 0 10px; }
 #image { transition: transform 180ms ease-out, opacity 120ms; }
 
 /* -------------------------------------------------------------- popovers */

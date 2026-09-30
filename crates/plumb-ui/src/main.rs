@@ -303,7 +303,10 @@ async fn scan_dir(path: String, size: u8, excludes: Vec<String>, app: tauri::App
     Ok(ov)
 }
 
-#[tauri::command]
+// `(async)` runs a sync command on Tauri's thread pool instead of the UI
+// thread; anything that walks the tree or touches disk must use it, or a slow
+// call freezes the window.
+#[tauri::command(async)]
 fn overview(size: u8, state: tauri::State<'_, App>) -> Result<Overview, String> {
     let g = state.loaded.lock().unwrap();
     let l = g.as_ref().ok_or("nothing scanned yet")?;
@@ -328,7 +331,7 @@ struct ViewReq {
 
 /// One binary frame: header, rect list, then RGBA pixels. Never the event
 /// system, which is documented as JSON `eval`.
-#[tauri::command]
+#[tauri::command(async)]
 fn render_view(req: ViewReq, state: tauri::State<'_, App>) -> Response {
     let g = state.loaded.lock().unwrap();
     let Some(l) = g.as_ref() else { return Response::new(Vec::new()) };
@@ -426,7 +429,7 @@ struct Info {
     children: Vec<Child>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn node_info(id: NodeId, size: u8, state: tauri::State<'_, App>) -> Result<Info, String> {
     let g = state.loaded.lock().unwrap();
     let l = g.as_ref().ok_or("nothing scanned yet")?;
@@ -489,7 +492,7 @@ struct Crumb {
     name: String,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn breadcrumb(id: NodeId, state: tauri::State<'_, App>) -> Result<Vec<Crumb>, String> {
     let g = state.loaded.lock().unwrap();
     let l = g.as_ref().ok_or("nothing scanned yet")?;
@@ -531,7 +534,7 @@ fn plan_for(l: &Loaded, ids: &[NodeId]) -> clean::Plan {
 }
 
 /// Dry run. The UI always calls this before it offers to stage anything.
-#[tauri::command]
+#[tauri::command(async)]
 fn cleanup_plan(ids: Vec<NodeId>, state: tauri::State<'_, App>) -> Result<PlanOut, String> {
     let g = state.loaded.lock().unwrap();
     let l = g.as_ref().ok_or("nothing scanned yet")?;
@@ -565,9 +568,21 @@ fn make_thumb(p: &Path, px: u32) -> Option<Vec<u8>> {
     // ever feels slow. Requests only start after the 250 ms hover delay.
     let dir = std::env::temp_dir().join(format!("plumb-thumb-{}", std::process::id()));
     std::fs::create_dir_all(&dir).ok()?;
-    std::process::Command::new("qlmanage").args(["-t", "-s"]).arg(px.to_string())
+    let mut child = std::process::Command::new("qlmanage").args(["-t", "-s"]).arg(px.to_string())
         .arg("-o").arg(&dir).arg(p).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
-        .status().ok()?;
+        .spawn().ok()?;
+    // qlmanage can hang for minutes on some files (seen on .jsonl), and this
+    // command runs on the UI thread, so cap the wait. A timed-out file caches
+    // as "no thumbnail" and is not retried.
+    let start = Instant::now();
+    while child.try_wait().ok()?.is_none() {
+        if start.elapsed() > Duration::from_millis(1500) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
     let out = dir.join(format!("{}.png", p.file_name()?.to_string_lossy()));
     let bytes = std::fs::read(&out).ok();
     let _ = std::fs::remove_file(&out);
@@ -580,7 +595,7 @@ fn make_thumb(p: &Path, px: u32) -> Option<Vec<u8>> {
 #[cfg(not(target_os = "macos"))]
 fn make_thumb(_p: &Path, _px: u32) -> Option<Vec<u8>> { None }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn thumbnail(id: NodeId, px: u32, state: tauri::State<'_, App>) -> Response {
     let g = state.loaded.lock().unwrap();
     let Some(l) = g.as_ref() else { return Response::new(Vec::new()) };
@@ -669,7 +684,7 @@ struct StageOut {
     refused: Vec<(String, String)>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn cleanup_stage(
     ids: Vec<NodeId>,
     label: String,
@@ -709,7 +724,7 @@ struct ManifestOut {
     partial: bool,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn cleanup_list() -> Result<Vec<ManifestOut>, String> {
     let now = clean::now_secs();
     let list = clean::list_staged().map_err(|e| e.to_string())?;
@@ -727,7 +742,7 @@ fn cleanup_list() -> Result<Vec<ManifestOut>, String> {
         .collect())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn cleanup_restore(id: u64, state: tauri::State<'_, App>) -> Result<usize, String> {
     let n = clean::restore(id).map_err(|e| e.to_string())?;
     let left: Vec<PathBuf> = clean::read_manifest(id)
@@ -811,7 +826,7 @@ struct SnapOut {
     modified: u64,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn snapshot_save(state: tauri::State<'_, App>) -> Result<SnapOut, String> {
     let g = state.loaded.lock().unwrap();
     let l = g.as_ref().ok_or("nothing scanned yet")?;
@@ -832,7 +847,7 @@ fn snapshot_save(state: tauri::State<'_, App>) -> Result<SnapOut, String> {
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn snapshot_list() -> Result<Vec<SnapOut>, String> {
     Ok(plumb_core::snapshot::list()
         .map_err(|e| e.to_string())?
@@ -856,7 +871,7 @@ struct DiffOut {
     delta: i64,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn snapshot_diff(old: String, new: String) -> Result<Vec<DiffOut>, String> {
     let a = plumb_core::snapshot::Snapshot::open(Path::new(&old)).map_err(|e| e.to_string())?;
     let b = plumb_core::snapshot::Snapshot::open(Path::new(&new)).map_err(|e| e.to_string())?;
@@ -897,7 +912,7 @@ fn scan_dupes(l: &Loaded, min_size: u64) -> Vec<plumb_core::dupes::Group> {
     plumb_core::dupes::find(&l.tree, Path::new(&l.root_path), min_size)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn dupes_find(min_size: u64, state: tauri::State<'_, App>) -> Result<DupesOut, String> {
     let g = state.loaded.lock().unwrap();
     let l = g.as_ref().ok_or("nothing scanned yet")?;
@@ -934,7 +949,7 @@ struct DedupeOut {
 }
 
 /// Always reachable as a dry run; the UI calls it that way first.
-#[tauri::command]
+#[tauri::command(async)]
 fn dupes_dedupe(
     min_size: u64,
     dry_run: bool,
@@ -1031,7 +1046,7 @@ fn app_out(
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn apps_list(guesses: bool, state: tauri::State<'_, App>) -> Result<Vec<AppOut>, String> {
     use plumb_core::apps::{self, LeftoverOpts};
     let apps = apps::list_apps().map_err(|e| e.to_string())?;
@@ -1074,7 +1089,7 @@ fn assoc_out(i: &plumb_core::apps::Associated) -> AssocOut {
 /// scan - previously these were three, with three different option sets, and
 /// the sheet could promise items that would not stage while staging items it
 /// had never shown.
-#[tauri::command]
+#[tauri::command(async)]
 fn app_detail(idx: usize, state: tauri::State<'_, App>) -> Result<AppDetail, String> {
     use plumb_core::apps;
     let cache = state.apps.lock().unwrap();
@@ -1132,7 +1147,7 @@ struct UninstallOut {
 /// Addressed by token, never by list index. An index is a moving target: the
 /// list is name-sorted, and refreshing it while a detail panel is open could
 /// shift the slot and uninstall a different application.
-#[tauri::command]
+#[tauri::command(async)]
 fn app_uninstall(token: u64, state: tauri::State<'_, App>) -> Result<UninstallOut, String> {
     use plumb_core::apps;
     // Take the plan the review sheet was built from. Gone means the list was
