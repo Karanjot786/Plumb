@@ -10,3 +10,4 @@ crates/*/gen/schemas/
 docs/
 site/
 HANDOFF.md
+.superpowers/
