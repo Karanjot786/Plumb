@@ -34,28 +34,13 @@ jobs:
         run: |
           T="${{ steps.tag.outputs.tag }}"
           gh release view "$T" >/dev/null 2>&1 && exit 0
-          gh release create "$T" --title "Plumb $T" --notes "$(cat <<'NOTES'
-          Plumb reports the blocks you get back when you delete something, not the
-          size each file claims.
-
-          ### Downloads
-
-          - macOS, Apple Silicon: the `aarch64` dmg
-          - macOS, Intel: the `x64` dmg
-          - Linux, x86_64: the `amd64` deb
-          - Command line only, any of the three: the `plumb-*.tar.gz` for your platform
-
-          Binaries are unsigned. macOS blocks the first launch: right-click the app,
-          choose Open, then Open again in the dialog. For the CLI, run
-          `xattr -d com.apple.quarantine ./plumb`.
-
-          ### Read before using `clean`
-
-          Nothing gets deleted except by `plumb commit`. Two defects in the staging
-          gate are open and documented under Known issues in the README. Read that
-          section first.
-          NOTES
-          )"
+          # Notes live in .github/release-notes/<tag>.md, one file per release,
+          # so a new tag never ships the previous release's text.
+          if [ -f ".github/release-notes/$T.md" ]; then
+            gh release create "$T" --title "Plumb $T" --notes-file ".github/release-notes/$T.md"
+          else
+            gh release create "$T" --title "Plumb $T" --generate-notes
+          fi
 
   build:
     name: ${{ matrix.label }}
